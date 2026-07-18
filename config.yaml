@@ -1,0 +1,76 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Web Chat Orchestrator — Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Selectors may need updating if platforms change their DOM structure.
+
+browser:
+  # Which browser to use: "edge" or "brave"
+  use: "edge"
+  remote_debugging_port: 9222
+  remote_debugging_url: "http://localhost:9222"
+  # Auto-launch the browser in debug mode when starting the tool?
+  auto_launch: true
+  # Separate profile folder so your normal browser isn't affected
+  user_data_dir_windows: "C:\\selenium\\AutomationProfile"
+  user_data_dir_mac: "/tmp/orchestrator_browser_profile"
+
+  # Browser executable paths (auto-detected if left empty)
+  paths:
+    edge:
+      windows:
+        - "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+        - "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"
+      mac:
+        - "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+    brave:
+      windows:
+        - "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"
+        - "C:\\Program Files (x86)\\BraveSoftware\\Brave-Browser\\Application\\brave.exe"
+      mac:
+        - "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+
+# Stability tuning
+timing:
+  typing_delay_ms: 12          # milliseconds between keystrokes for organic feel
+  stability_wait_s: 2.0        # seconds to confirm response text stopped growing
+  stability_samples: 3         # consecutive stable samples needed
+  max_response_wait_s: 180     # hard timeout waiting for response (3 min)
+  post_send_delay_s: 1.0       # pause after clicking send before polling
+
+platforms:
+  chatgpt:
+    url: "https://chatgpt.com/"
+    # ChatGPT uses a contenteditable div with id prompt-textarea (or ProseMirror)
+    input_selector: "div#prompt-textarea, div.ProseMirror, [contenteditable='true'][data-placeholder], textarea[placeholder]"
+    stop_button: "[data-testid='stop-button'], button[aria-label='Stop generating'], button[aria-label='Stop']"
+    send_button: "[data-testid='send-button'], button[aria-label='Send prompt'], button[data-testid='composer-send-button']"
+    response_selector: "[data-message-author-role='assistant'], div.agent-turn, div.markdown"
+    new_chat_button: "a[data-testid='create-new-chat-button'], nav a[href='/']"
+
+  claude:
+    url: "https://claude.ai/new"
+    # Claude uses contenteditable divs, sometimes with ProseMirror
+    input_selector: "div[contenteditable='true'].ProseMirror, div[contenteditable='true'], [role='textbox'], fieldset div[contenteditable='true']"
+    stop_button: "button[aria-label='Stop Response'], button:has-text('Stop'), button[aria-label='Stop']"
+    send_button: "button[aria-label='Send Message'], button[aria-label='Send'], button:has(> svg[viewBox])"
+    # Only select Claude's final Markdown, never the temporary "Thinking" status.
+    response_selector: "[data-is-streaming] .standard-markdown, [data-is-streaming] .progressive-markdown"
+    new_chat_button: "a[href='/new'], button:has-text('New chat')"
+
+  gemini:
+    url: "https://gemini.google.com/"
+    # Gemini uses a rich-textarea custom element with contenteditable inside
+    input_selector: "rich-textarea div[contenteditable='true'], div[contenteditable='true'][aria-label*='prompt'], .ql-editor, div[contenteditable='true']"
+    stop_button: "button[aria-label='Stop'], button.stop-button, button:has-text('Stop')"
+    send_button: "button.send-button, button[aria-label='Send message'], button[aria-label='Send'], button[mat-icon-button]"
+    response_selector: "model-response, message-content, .response-container, .model-response-text"
+    new_chat_button: "button[aria-label='New chat'], a[href='/app']"
+
+  deepseek:
+    url: "https://chat.deepseek.com/"
+    # DeepSeek uses a textarea or contenteditable
+    input_selector: "textarea#chat-input, textarea[placeholder*='Message'], textarea[placeholder*='message'], div[contenteditable='true'], textarea"
+    stop_button: "button:has-text('Stop'), div[class*='stop'], button[aria-label='Stop']"
+    send_button: "div[class*='send'] button, button[aria-label='Send'], button:has(svg[viewBox]), div[role='button'][class*='send']"
+    response_selector: ".markdown-body, div[class*='message-content'], div[class*='assistant'], div[class*='markdown']"
+    new_chat_button: "a[href='/'], button:has-text('New chat'), div[class*='new-chat']"
