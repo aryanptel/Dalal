@@ -224,7 +224,7 @@ init_session_state(config)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown('<p class="hero-title">🧠 AI Orchestrator</p>', unsafe_allow_html=True)
+    st.markdown('<p class="hero-title">🧠 Dalal AI</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="hero-sub">Route prompts across AI web chats. '
         "Equations, code &amp; tables render beautifully.</p>",
