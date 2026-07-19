@@ -17,6 +17,8 @@ from utils.exceptions import BrowserActionRequired, ResponseCaptureTimeout
 StatusCallback = Callable[[str], None] | None
 
 
+from context_compressor import ContextCompressor
+
 class Orchestrator:
     """
     Routes user messages to the correct platform and manages context injection.
@@ -81,7 +83,9 @@ class Orchestrator:
             self._status(
                 f"🔄 Context switch detected → injecting history into {platform}"
             )
-            transcript = self.context.build_context_transcript()
+            compressor = ContextCompressor()
+            selected = compressor.build_context(self.context.messages, user_message)
+            transcript = self.context.build_context_transcript(messages=selected)
             full_prompt = f"{transcript}\n\n**User:** {user_message}"
         else:
             full_prompt = user_message

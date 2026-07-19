@@ -80,7 +80,7 @@ class ContextManager:
             return False  # first message ever — no switch
         return self.last_used_model != target_model
 
-    def build_context_transcript(self, max_chars: int = 12000) -> str:
+    def build_context_transcript(self, max_chars: int = 12000, messages: list[dict[str, Any]] | None = None) -> str:
         """
         Format the entire conversation history into a markdown transcript
         block suitable for pasting into a new platform's input box.
@@ -90,12 +90,16 @@ class ContextManager:
         max_chars : int
             Maximum character length for the transcript. Oldest messages
             are trimmed first if the limit is exceeded.
+        messages : list[dict[str, Any]], optional
+            Optional specific list of messages to format. If not provided,
+            defaults to self.messages.
 
         Returns
         -------
         str  The formatted transcript text.
         """
-        if not self.messages:
+        msgs_to_format = messages if messages is not None else self.messages
+        if not msgs_to_format:
             return ""
 
         if max_chars <= 0:
@@ -103,7 +107,7 @@ class ContextManager:
 
         # Build lines in chronological order so the transcript remains natural.
         lines: list[str] = []
-        for msg in self.messages:
+        for msg in msgs_to_format:
             role_label = "User" if msg["role"] == "user" else f"Assistant ({msg['model']})"
             timestamp = msg.get("timestamp", "")
             line = f"**{role_label}** [{timestamp}]:\n{msg['content']}"
