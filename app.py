@@ -19,6 +19,7 @@ import yaml
 
 from browser_manager import BrowserManager
 from context_manager import ContextManager
+from flagged_context_manager import FlaggedContextManager
 from orchestrator import Orchestrator
 from utils.exceptions import BrowserActionRequired, ResponseCaptureTimeout
 
@@ -63,8 +64,11 @@ def init_session_state(config: dict[str, Any]) -> None:
     st.session_state.config = config
     st.session_state.platforms = list(config["platforms"].keys())
     st.session_state.active_model = st.session_state.platforms[0]
+    st.session_state.pending_model_switch = None
+    st.session_state.selected_red_ids = []
     st.session_state.browser = None
     st.session_state.orchestrator = None
+    st.session_state.flagged_mgr = FlaggedContextManager()
     st.session_state.connected = False
     st.session_state.connection_error = ""
     st.session_state.status_log = []
@@ -116,17 +120,39 @@ def render_model_badge(model: str) -> str:
     )
 
 
-def render_message(msg: dict[str, Any]) -> None:
-    """Render a chat message with full Markdown + LaTeX support."""
+def render_flag_controls(index: int, flag: str | None) -> None:
+    c1, c2, c3 = st.columns([1, 1, 15])
+    
+    def toggle_green():
+        new_flag = None if flag == "green" else "green"
+        st.session_state.context.update_flag(index, new_flag)
+        
+    def toggle_red():
+        new_flag = None if flag == "red" else "red"
+        st.session_state.context.update_flag(index, new_flag)
+        
+    with c1:
+        icon_g = "🟩" if flag == "green" else "⚪"
+        st.button(icon_g, key=f"g_{index}", on_click=toggle_green, help="Toggle Global Context (Green)")
+    with c2:
+        icon_r = "🟥" if flag == "red" else "⚪"
+        st.button(icon_r, key=f"r_{index}", on_click=toggle_red, help="Toggle On-Demand Context (Red)")
+
+
+def render_message(index: int, msg: dict[str, Any]) -> None:
+    """Render a chat message with full Markdown + LaTeX support and flag controls."""
     role = msg["role"]
     content = msg["content"]
     model = msg.get("model", "")
+    flag = msg.get("flag")
 
     if role == "user":
         with st.chat_message("user", avatar="👤"):
+            render_flag_controls(index, flag)
             st.markdown(content)
     else:
         with st.chat_message("assistant", avatar="🤖"):
+            render_flag_controls(index, flag)
             st.markdown(render_model_badge(model), unsafe_allow_html=True)
             st.markdown(content)
 
@@ -269,10 +295,29 @@ with st.sidebar:
         if st.session_state.active_model in st.session_state.platforms
         else 0,
         format_func=lambda p: platform_labels[p],
-        key="model_selector",
     )
-    st.session_state.active_model = selected
-    st.markdown(render_model_badge(selected), unsafe_allow_html=True)
+    
+    if selected != st.session_state.active_model:
+        st.warning(f"Pending Switch to {selected}")
+        delivered = st.session_state.flagged_mgr.session_delivered.get(selected, set())
+        available_reds = [(i, m) for i, m in enumerate(st.session_state.context.messages) if m.get("flag") == "red" and i not in delivered]
+        
+        selected_red_ids = []
+        if available_reds:
+            st.markdown("**Select red context to attach:**")
+            for i, m in available_reds:
+                preview = m["content"][:40] + ("..." if len(m["content"]) > 40 else "")
+                if st.checkbox(f"[{i}] {preview}", key=f"attach_{i}_{selected}"):
+                    selected_red_ids.append(i)
+        else:
+            st.caption("No red-flagged messages available.")
+            
+        if st.button("Confirm Switch", type="primary", use_container_width=True):
+            st.session_state.active_model = selected
+            st.session_state.selected_red_ids = selected_red_ids
+            st.rerun()
+    else:
+        st.markdown(render_model_badge(st.session_state.active_model), unsafe_allow_html=True)
 
     st.divider()
 
@@ -302,6 +347,34 @@ with st.sidebar:
         st.caption("Used: " + ", ".join(stats["models_used"]))
 
     st.divider()
+    
+    # Flag Stats
+    green_msgs = [m for m in st.session_state.context.messages if m.get("flag") == "green"]
+    red_msgs = [m for m in st.session_state.context.messages if m.get("flag") == "red"]
+    green_tokens = sum(int(len(m["content"].split()) * 1.3) for m in green_msgs)
+    red_tokens = sum(int(len(m["content"].split()) * 1.3) for m in red_msgs)
+
+    st.markdown(f"**🟩 Green:** {len(green_msgs)} msgs (~{green_tokens} tokens)")
+    st.markdown(f"**🟥 Red:** {len(red_msgs)} msgs (~{red_tokens} tokens)")
+    if green_tokens > 4000:
+        st.warning("Green context may be too large for some models (>4000 tokens).")
+
+    st.divider()
+
+    # Context Delivery Status
+    st.markdown("### Context Delivery Status")
+    delivered = st.session_state.flagged_mgr.session_delivered
+    if delivered:
+        for model_name, indices in delivered.items():
+            if indices:
+                st.caption(f"**{model_name}**: {len(indices)} messages delivered (Indices: {', '.join(map(str, sorted(indices)))})")
+            if st.button(f"Reset {model_name} Context", key=f"reset_ctx_{model_name}"):
+                st.session_state.flagged_mgr.reset_model_context(model_name)
+                st.rerun()
+    else:
+        st.caption("No context delivered yet.")
+
+    st.divider()
 
     if st.button("🗑️ Clear Conversation", use_container_width=True):
         st.session_state.context.clear()
@@ -326,8 +399,8 @@ st.caption(
 )
 
 # Render conversation history
-for msg in st.session_state.context.messages:
-    render_message(msg)
+for i, msg in enumerate(st.session_state.context.messages):
+    render_message(i, msg)
 
 # Handle pending manual response (timeout or browser action needed)
 pending = st.session_state.pending_manual
@@ -364,12 +437,15 @@ if "last_send_error" in st.session_state and st.session_state.last_send_error:
 if not st.session_state.connected:
     st.info("Connect to your browser using the sidebar to start chatting.")
 else:
+    pending_switch = selected != st.session_state.active_model
     user_input = st.chat_input(
         "Type your message…",
-        disabled=bool(pending),
+        disabled=bool(pending) or pending_switch,
     )
     if pending:
         st.info("Save or clear the pending response before sending another message.")
+    elif pending_switch:
+        st.info("Confirm the model switch in the sidebar before sending a message.")
     if user_input:
         # Clear any previous error
         st.session_state.last_send_error = ""
@@ -385,9 +461,14 @@ else:
             try:
                 with st.spinner(f"Sending to {PLATFORM_LABELS.get(platform, platform)}… (watch the browser tab)"):
                     response = st.session_state.orchestrator.send_message(
-                        platform, user_input
+                        platform,
+                        user_input,
+                        flagged_mgr=st.session_state.flagged_mgr,
+                        selected_red_ids=st.session_state.selected_red_ids
                     )
                 st.markdown(response)
+                # Clear red flags after successful send
+                st.session_state.selected_red_ids = []
                 success = True
 
             except BrowserActionRequired as exc:

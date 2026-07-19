@@ -16,8 +16,8 @@ from utils.exceptions import BrowserActionRequired, ResponseCaptureTimeout
 
 StatusCallback = Callable[[str], None] | None
 
-
 from context_compressor import ContextCompressor
+from flagged_context_manager import FlaggedContextManager
 
 class Orchestrator:
     """
@@ -52,7 +52,13 @@ class Orchestrator:
         if self._on_status:
             self._on_status(message)
 
-    def send_message(self, platform: str, user_message: str) -> str:
+    def send_message(
+        self,
+        platform: str,
+        user_message: str,
+        flagged_mgr: FlaggedContextManager | None = None,
+        selected_red_ids: list[int] | None = None
+    ) -> str:
         """
         Send a message to the specified platform and return the response.
 
@@ -66,6 +72,10 @@ class Orchestrator:
             Target platform name: "chatgpt", "claude", "gemini", or "deepseek".
         user_message : str
             The user's raw message text.
+        flagged_mgr : FlaggedContextManager, optional
+            The manager handling the red/green flag filtering.
+        selected_red_ids: list[int], optional
+            The indices of red-flagged messages explicitly selected by the user.
 
         Returns
         -------
@@ -83,10 +93,19 @@ class Orchestrator:
             self._status(
                 f"🔄 Context switch detected → injecting history into {platform}"
             )
-            compressor = ContextCompressor()
-            selected = compressor.build_context(self.context.messages, user_message)
-            transcript = self.context.build_context_transcript(messages=selected)
-            full_prompt = f"{transcript}\n\n**User:** {user_message}"
+            if flagged_mgr:
+                selected = flagged_mgr.build_context(
+                    self.context.messages, platform, selected_red_ids
+                )
+            else:
+                compressor = ContextCompressor()
+                selected = compressor.build_context(self.context.messages, user_message)
+                
+            transcript = self.context.build_context_transcript(messages=selected, max_chars=12000)
+            if transcript:
+                full_prompt = f"{transcript}\n\n**User:** {user_message}"
+            else:
+                full_prompt = user_message
         else:
             full_prompt = user_message
 

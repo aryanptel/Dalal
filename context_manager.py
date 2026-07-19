@@ -38,6 +38,12 @@ class ContextManager:
                     and isinstance(message.get("content"), str)
                     and isinstance(message.get("model"), str)
                 ]
+                
+                # Ensure all loaded messages have a flag field
+                for msg in self.messages:
+                    if "flag" not in msg:
+                        msg["flag"] = None
+                        
                 self.last_used_model = data.get("last_used_model")
                 if not isinstance(self.last_used_model, str):
                     self.last_used_model = (
@@ -48,7 +54,7 @@ class ContextManager:
 
     # ── Core Operations ───────────────────────────────────────────────────────
 
-    def add_message(self, role: str, content: str, model: str) -> None:
+    def add_message(self, role: str, content: str, model: str, flag: str | None = None) -> None:
         """
         Record a message in the local history.
 
@@ -57,6 +63,7 @@ class ContextManager:
         role : str   "user" or "assistant"
         content : str   The message text
         model : str   Platform name (chatgpt / claude / gemini)
+        flag : str | None  "green", "red", or None
         """
         if role not in {"user", "assistant"}:
             raise ValueError("role must be 'user' or 'assistant'")
@@ -64,11 +71,14 @@ class ContextManager:
             raise ValueError("content must be a non-empty string")
         if not isinstance(model, str) or not model.strip():
             raise ValueError("model must be a non-empty string")
+        if flag not in {None, "green", "red"}:
+            raise ValueError("flag must be 'green', 'red', or None")
 
         self.messages.append({
             "role": role,
             "content": content,
             "model": model,
+            "flag": flag,
             "timestamp": datetime.now().isoformat(),
         })
         self.last_used_model = model
@@ -79,6 +89,14 @@ class ContextManager:
         if self.last_used_model is None:
             return False  # first message ever — no switch
         return self.last_used_model != target_model
+
+    def update_flag(self, index: int, new_flag: str | None) -> None:
+        """Update the flag for a specific message and save."""
+        if 0 <= index < len(self.messages):
+            if new_flag not in {None, "green", "red"}:
+                raise ValueError("flag must be 'green', 'red', or None")
+            self.messages[index]["flag"] = new_flag
+            self._auto_save()
 
     def build_context_transcript(self, max_chars: int = 12000, messages: list[dict[str, Any]] | None = None) -> str:
         """

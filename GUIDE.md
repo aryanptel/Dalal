@@ -26,7 +26,7 @@ A tool that connects to your browser and lets you chat with **ChatGPT**, **Claud
 
 The tool connects to a **real browser** via CDP (Chrome DevTools Protocol). It types your messages into the actual web interfaces and reads responses — **no API keys needed**. You use the free-tier web versions of each AI.
 
-When you **switch models**, it automatically injects the full conversation history so the new model has full context.
+When you **switch models**, it intelligently injects history using a **Flagged Context System**. You can flag messages as 🟩 Green (global, always sent to new models) or 🟥 Red (on-demand, selectively attached when switching). This ensures the new model has precise context without blowing up your token limits or redundantly sending the same history twice.
 
 **Auto-Launch** — The tool can automatically start your browser in debug mode. No manual terminal commands needed.
 
@@ -174,10 +174,12 @@ python3 main.py
 | Feature | Description |
 |---------|-------------|
 | Model picker | Sidebar dropdown to target ChatGPT, Claude, Gemini, or DeepSeek |
+| Context Flags | Click 🟩 (Green) or 🟥 (Red) on any message to control cross-model context delivery |
+| Switch Flow | A pending switch modal lets you attach specific red-flagged messages before changing models |
 | Rich rendering | Markdown, LaTeX math, tables, and code blocks in chat bubbles |
 | Live status | Activity log while waiting for browser responses |
 | Manual paste | If automation times out, paste the response from the browser tab |
-| Stats | Message count, character count, models used |
+| Stats | Message count, character/token count, models used, and context delivery tracking |
 | Clear history | Reset conversation with one click |
 
 ### LaTeX Examples
@@ -243,6 +245,7 @@ AiOrchestor/
 ├── main.py              # CLI entry point & interactive loop
 ├── orchestrator.py      # Hybrid context routing logic
 ├── browser_manager.py   # CDP connection, auto-launch, DOM interaction
+├── flagged_context_manager.py # Manual green/red context flagging logic
 ├── context_manager.py   # Conversation history & transcript formatting
 ├── config.yaml          # Browser choice, selectors, timing
 ├── requirements.txt     # Python dependencies

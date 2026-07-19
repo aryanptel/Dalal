@@ -20,6 +20,7 @@ import subprocess
 import threading
 import time
 import sys
+import atexit
 from typing import Any, Callable
 
 # ── Fix Windows terminal encoding ─────────────────────────────────────────────
@@ -256,6 +257,10 @@ class BrowserManager:
         """Cleanly disconnect (thread-safe)."""
         self._worker.run(self._disconnect_impl)
 
+    def close(self) -> None:
+        """Alias for disconnect, useful for graceful shutdown routines."""
+        self.disconnect()
+
     def is_connected(self) -> bool:
         try:
             return self._worker.run(self._is_connected_impl, timeout=10)
@@ -459,8 +464,8 @@ class BrowserManager:
         # 3. Clear any existing content
         self._clear_input(page, input_el)
 
-        # 4. Type the message (clipboard paste for long texts)
-        if len(text) > 500:
+        # 4. Type the message (clipboard paste for long texts or multiline text)
+        if len(text) > 500 or "\n" in text:
             self._paste_text(page, input_el, text)
         else:
             input_el.type(text, delay=typing_delay)
@@ -619,5 +624,12 @@ class BrowserManager:
             try:
                 tabs.append({"title": page.title(), "url": page.url})
             except Exception:
-                tabs.append({"title": "(error)", "url": "(error)"})
+                pass
         return tabs
+
+# Register atexit handler to ensure the playwright worker is stopped gracefully
+@atexit.register
+def _cleanup_playwright_worker():
+    worker = _PlaywrightWorker._instance
+    if worker is not None:
+        worker.stop_playwright()
