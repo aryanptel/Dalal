@@ -15,17 +15,17 @@ This document covers the entire Dalal AI system, including the Playwright browse
 Dalal AI operates as a local bridge between a user interface (Web/CLI) and a real, locally installed web browser running in remote-debugging mode. 
 
 **High-Level Data Flow:**
-1. **User Input:** The user types a message in `app.py` (Streamlit) or `main.py` (CLI).
-2. **Orchestrator Routing:** `orchestrator.py` intercepts the message. If the user is switching to a new AI model, it invokes the Context Management layer to compile a historical transcript.
-3. **Context Generation:** `flagged_context_manager.py` builds the transcript based on user-defined Green/Red flags (falling back to `context_compressor.py` if no flags exist). 
-4. **Browser Execution:** The final payload is handed to `browser_manager.py`, which executes DOM manipulations over the Chrome DevTools Protocol (CDP) to type the message into the active browser tab and extract the response.
-5. **State Persistence:** The response is returned to the Orchestrator, logged via `context_manager.py` into `chat_history.json`, and rendered back to the user.
+1. **User Input:** The user types a message in `dalal_ai/ui/app.py` (Streamlit) or `main.py` (CLI).
+2. **Orchestrator Routing:** `dalal_ai/core/orchestrator.py` intercepts the message. If the user is switching to a new AI model, it invokes the Context Management layer to compile a historical transcript.
+3. **Context Generation:** `flagged_dalal_ai/core/context_manager.py` builds the transcript based on user-defined Green/Red flags (falling back to `context_compressor.py` if no flags exist). 
+4. **Browser Execution:** The final payload is handed to `dalal_ai/browser/browser_manager.py`, which executes DOM manipulations over the Chrome DevTools Protocol (CDP) to type the message into the active browser tab and extract the response.
+5. **State Persistence:** The response is returned to the Orchestrator, logged via `dalal_ai/core/context_manager.py` into `chat_history.json`, and rendered back to the user.
 
 ---
 
 ## 3. Detailed Module Specifications
 
-### 3.1 Browser Manager (`browser_manager.py`)
+### 3.1 Browser Manager (`dalal_ai/browser/browser_manager.py`)
 Handles all direct interaction with the DOM of target platforms (ChatGPT, Claude, Gemini, DeepSeek). It heavily leverages Playwright over a CDP connection.
 
 **Key Structural Elements:**
@@ -43,7 +43,7 @@ Handles all direct interaction with the DOM of target platforms (ChatGPT, Claude
     - `close()`: Cleanly shuts down the Playwright worker thread and disconnects the CDP session. This is automatically registered with `atexit` to ensure graceful shutdown when the Streamlit session or CLI terminates.
   - **`_RESPONSE_TO_MARKDOWN_SCRIPT` (JavaScript Constant):** Injected directly into the page to recursively walk the DOM of the response element. It recovers Markdown semantics (`##`, `**`, `>`) and extracts embedded LaTeX (from KaTeX/MathJax `annotation` tags or `alttext`) before Playwright reads the text.
 
-### 3.2 Context Manager (`context_manager.py`)
+### 3.2 Context Manager (`dalal_ai/core/context_manager.py`)
 The local database tracking conversation turns.
 
 - **`class ContextManager`**
@@ -55,7 +55,7 @@ The local database tracking conversation turns.
     - `build_context_transcript(max_chars, messages)`: Transforms a list of raw message dictionaries into a continuous Markdown transcript block, injecting chronological markers. Truncates from the *oldest* messages if `max_chars` is exceeded to protect browser input limits.
     - `update_flag(index, new_flag)`: Modifies the flag state ("green", "red", or None) of a specific message. Enforces flag exclusivity (a message cannot be both green and red; setting one clears the other) and calls `_auto_save()` to persist state to disk.
 
-### 3.3 Flagged Context Manager (`flagged_context_manager.py`)
+### 3.3 Flagged Context Manager (`flagged_dalal_ai/core/context_manager.py`)
 Provides deterministic, user-controlled context filtering when switching models.
 
 - **`class FlaggedContextManager`**
@@ -82,7 +82,7 @@ The legacy algorithmic fallback for semantic token-budget compression, used if t
       - Calculates **BM25** to rank chunks against the user's immediate `query`.
       - Combines scores `(alpha * TextRank) + ((1 - alpha) * BM25)` and greedily selects the top chunks that fit within `max_tokens`.
 
-### 3.5 Routing Orchestrator (`orchestrator.py`)
+### 3.5 Routing Orchestrator (`dalal_ai/core/orchestrator.py`)
 The bridge between the UI and the backend systems.
 
 - **`class Orchestrator`**
@@ -94,7 +94,7 @@ The bridge between the UI and the backend systems.
       - Calls `browser_manager.extract_stable_response()`.
       - Catches exceptions (`BrowserActionRequired`, `ResponseCaptureTimeout`) and bubbles them to the UI for manual intervention.
 
-### 3.6 Web UI (`app.py`)
+### 3.6 Web UI (`dalal_ai/ui/app.py`)
 The primary Streamlit frontend.
 
 - **Architecture:** 
@@ -158,7 +158,7 @@ Local storage for the conversation. Loaded entirely into memory by `ContextManag
 
 ### 5.1 The Model Switch Flow
 1. User clicks the Target Model dropdown in Streamlit sidebar, changing from `chatgpt` to `claude`.
-2. Streamlit reruns. `app.py` detects `selected != st.session_state.active_model`.
+2. Streamlit reruns. `dalal_ai/ui/app.py` detects `selected != st.session_state.active_model`.
 3. UI locks the main chat input and renders the **Pending Switch Modal** in the sidebar.
 4. The modal queries `FlaggedContextManager` to find all `"red"` messages NOT in `session_delivered["claude"]`.
 5. User checks checkboxes for specific red messages and clicks "Confirm".

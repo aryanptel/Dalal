@@ -451,12 +451,23 @@ class BrowserManager:
 
         # 2. Find and focus the input element
         input_el = self._find_element(page, plat["input_selector"], timeout=10000)
+        fallback_used = False
+        fallback_btn = None
+        
         if input_el is None:
-            raise RuntimeError(
-                f"❌ Cannot find input box for {platform}.\n"
-                f"   Selector: {plat['input_selector']}\n"
-                f"   The platform UI may have changed. Please check the page manually."
-            )
+            self._status("⚠ Input selector failed. Attempting heuristic fallback...")
+            fallback_input, fallback_btn = self._find_input_and_button_fallback(page)
+            if fallback_input and fallback_btn:
+                self._status("⚠ Using heuristic fallback for input and button.")
+                input_el = fallback_input
+                fallback_used = True
+            else:
+                from utils.exceptions import BrowserActionRequired
+                raise BrowserActionRequired(
+                    f"❌ Cannot find input box for {platform}.\n"
+                    f"   Selector: {plat['input_selector']}\n"
+                    f"   The platform UI may have changed. Please check the page manually."
+                )
 
         input_el.click()
         time.sleep(0.2)
@@ -475,7 +486,11 @@ class BrowserManager:
         time.sleep(0.3)
 
         # 6. Click send
-        send_btn = self._find_element(page, plat["send_button"], timeout=5000)
+        send_btn = fallback_btn if fallback_used else self._find_element(page, plat["send_button"], timeout=5000)
+        if send_btn is None:
+            self._status("⚠ Send button selector failed. Attempting heuristic fallback...")
+            _, send_btn = self._find_input_and_button_fallback(page)
+            
         if send_btn is None:
             self._status(f"⚠ Send button not found for {platform}, trying Enter key...")
             page.keyboard.press("Enter")
@@ -530,6 +545,7 @@ class BrowserManager:
         )
         generation_seen = False
         response_seen = False
+        network_idle_waited = False
         stable_count = 0
         last_text = ""
 
@@ -543,6 +559,17 @@ class BrowserManager:
                 if stop_btn is not None and not generation_seen:
                     generation_seen = True
                     self._status("✅ Response started.")
+
+                if stop_btn is None and response_seen and not network_idle_waited:
+                    network_idle_timeout = self._timing.get("network_idle_timeout_s", 2.0)
+                    self._status("⏳ Waiting for network idle...")
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=network_idle_timeout * 1000)
+                    except Exception:
+                        pass
+                    network_idle_waited = True
+                    snapshot = self._get_response_snapshot(page, plat["response_selector"])
+                    is_new_response = self._is_new_response(snapshot, baseline)
 
                 if is_new_response:
                     if not response_seen:
@@ -626,6 +653,43 @@ class BrowserManager:
             except Exception:
                 pass
         return tabs
+
+    def _find_input_and_button_fallback(self, page: Page):
+        """Heuristic fallback to find the largest contenteditable input and send button."""
+        input_el = None
+        try:
+            inputs = page.locator('[contenteditable="true"]').all()
+            max_area = -1
+            for el in inputs:
+                if el.is_visible():
+                    box = el.bounding_box()
+                    if box:
+                        area = box['width'] * box['height']
+                        if area > max_area:
+                            max_area = area
+                            input_el = el
+        except Exception:
+            pass
+
+        send_btn = None
+        try:
+            buttons = page.locator('button[aria-label*="Send" i]').all()
+            if not buttons:
+                buttons = page.locator('button:has-text("Send"), button:has-text("Submit")').all()
+            
+            max_area = -1
+            for el in buttons:
+                if el.is_visible():
+                    box = el.bounding_box()
+                    if box:
+                        area = box['width'] * box['height']
+                        if area > max_area:
+                            max_area = area
+                            send_btn = el
+        except Exception:
+            pass
+
+        return input_el, send_btn
 
 # Register atexit handler to ensure the playwright worker is stopped gracefully
 @atexit.register

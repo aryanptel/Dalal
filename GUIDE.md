@@ -3,7 +3,7 @@
 A tool that connects to your browser and lets you chat with **ChatGPT**, **Claude**, **Gemini**, and **DeepSeek** from a single interface — preserving full conversation context when you switch between models.
 
 **Two ways to use it:**
-- **Web UI (recommended)** — `streamlit run app.py` — rich Markdown, LaTeX equations, code blocks
+- **Web UI (recommended)** — `python -m dalal_ai` — rich Markdown, LaTeX equations, code blocks
 - **Terminal CLI** — `python main.py` — lightweight text interface
 
 **Supported browsers:** Microsoft Edge, Brave  
@@ -16,7 +16,7 @@ A tool that connects to your browser and lets you chat with **ChatGPT**, **Claud
 ```
 ┌───────────────────┐         ┌──────────────────────────────────┐
 │  Browser UI       │ ──────▶ │  Edge / Brave (Debug Port 9222)  │
-│  (app.py)         │ ◀────── │  ┌─ ChatGPT tab                 │
+│  (dalal_ai)       │ ◀────── │  ┌─ ChatGPT tab                 │
 │  or Terminal CLI  │         │  ├─ Claude tab                   │
 │                   │         │  ├─ Gemini tab                  │
 │  Pick model,      │         │  ├─ DeepSeek tab                │
@@ -67,7 +67,7 @@ browser:
 ### 3. Run the Web UI (Recommended)
 
 ```bash
-python -m streamlit run app.py
+python -m dalal_ai
 ```
 
 Or double-click `run.bat` on Windows.
@@ -239,20 +239,27 @@ The web UI renders math returned by models, for example:
 
 ## Project Structure
 
-```
+```text
 AiOrchestor/
-├── app.py               # Web UI (Streamlit) — recommended entry point
+├── dalal_ai/            # Main application package
+│   ├── __main__.py      # App entry point (`python -m dalal_ai`)
+│   ├── ui/              # User Interface
+│   │   └── app.py       # Web UI (Streamlit)
+│   ├── core/            # Context & orchestration
+│   │   ├── orchestrator.py
+│   │   ├── context_manager.py
+│   │   ├── flagged_context_manager.py
+│   │   └── context_compressor.py
+│   └── browser/         # Browser automation
+│       └── browser_manager.py
+├── doc/                 # Documentation
+│   └── file_upload_design.md
+├── exports/             # Exported session transcripts
 ├── main.py              # CLI entry point & interactive loop
-├── orchestrator.py      # Hybrid context routing logic
-├── browser_manager.py   # CDP connection, auto-launch, DOM interaction
-├── flagged_context_manager.py # Manual green/red context flagging logic
-├── context_manager.py   # Conversation history & transcript formatting
 ├── config.yaml          # Browser choice, selectors, timing
 ├── requirements.txt     # Python dependencies
-├── design               # Design document
-├── GUIDE.md             # This file
-└── utils/
-    └── exceptions.py    # Shared error types
+├── DETAILED_DESIGN.md   # Design document
+└── GUIDE.md             # This file
 ```
 
 ---

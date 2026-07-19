@@ -36,6 +36,10 @@ timing:
   stability_samples: 3         # consecutive stable samples needed
   max_response_wait_s: 180     # hard timeout waiting for response (3 min)
   post_send_delay_s: 1.0       # pause after clicking send before polling
+  network_idle_timeout_s: 2.0  # wait for network to idle after generation
+
+# Export settings
+export_directory: "exports"
 
 platforms:
   chatgpt:

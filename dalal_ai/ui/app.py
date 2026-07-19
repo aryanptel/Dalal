@@ -17,10 +17,10 @@ from typing import Any
 import streamlit as st
 import yaml
 
-from browser_manager import BrowserManager
-from context_manager import ContextManager
-from flagged_context_manager import FlaggedContextManager
-from orchestrator import Orchestrator
+from dalal_ai.browser.browser_manager import BrowserManager
+from dalal_ai.core.context_manager import ContextManager
+from dalal_ai.core.flagged_context_manager import FlaggedContextManager
+from dalal_ai.core.orchestrator import Orchestrator
 from utils.exceptions import BrowserActionRequired, ResponseCaptureTimeout
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -49,8 +49,11 @@ PLATFORM_COLORS = {
 }
 
 
+def get_project_root() -> str:
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 def load_config() -> dict[str, Any]:
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), CONFIG_FILE)
+    config_path = os.path.join(get_project_root(), CONFIG_FILE)
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
@@ -59,7 +62,7 @@ def init_session_state(config: dict[str, Any]) -> None:
     if "initialized" in st.session_state:
         return
 
-    history_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), HISTORY_FILE)
+    history_path = os.path.join(get_project_root(), HISTORY_FILE)
     st.session_state.context = ContextManager(persist_path=history_path)
     st.session_state.config = config
     st.session_state.platforms = list(config["platforms"].keys())
@@ -381,6 +384,12 @@ with st.sidebar:
         st.session_state.pending_manual = None
         st.rerun()
 
+    if st.button("💾 Export Session", use_container_width=True):
+        export_dir = st.session_state.config.get("export_directory", "exports")
+        export_dir_full = os.path.join(get_project_root(), export_dir)
+        j_path, m_path = st.session_state.context.export_session(export_dir_full)
+        st.toast(f"Exported to {export_dir_full}")
+
     if st.session_state.connected and st.session_state.browser:
         with st.expander("Open Browser Tabs"):
             for tab in st.session_state.browser.list_open_tabs():
@@ -401,6 +410,20 @@ st.caption(
 # Render conversation history
 for i, msg in enumerate(st.session_state.context.messages):
     render_message(i, msg)
+
+# Smart Flagging Assist
+if len(st.session_state.context.messages) == 2 and not st.session_state.get('flag_assist_shown', False):
+    st.info("Suggestion: Set your first message as global context (green flag) so it's always included when switching models.")
+    col1, col2 = st.columns([2, 10])
+    with col1:
+        if st.button("Set Green Flag", key="assist_green"):
+            st.session_state.context.update_flag(0, "green")
+            st.session_state.flag_assist_shown = True
+            st.rerun()
+    with col2:
+        if st.button("Dismiss", key="assist_dismiss"):
+            st.session_state.flag_assist_shown = True
+            st.rerun()
 
 # Handle pending manual response (timeout or browser action needed)
 pending = st.session_state.pending_manual

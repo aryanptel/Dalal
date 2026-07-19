@@ -10,14 +10,14 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from browser_manager import BrowserManager
-from context_manager import ContextManager
+from dalal_ai.browser.browser_manager import BrowserManager
+from dalal_ai.core.context_manager import ContextManager
 from utils.exceptions import BrowserActionRequired, ResponseCaptureTimeout
 
 StatusCallback = Callable[[str], None] | None
 
-from context_compressor import ContextCompressor
-from flagged_context_manager import FlaggedContextManager
+from dalal_ai.core.context_compressor import ContextCompressor
+from dalal_ai.core.flagged_context_manager import FlaggedContextManager
 
 class Orchestrator:
     """

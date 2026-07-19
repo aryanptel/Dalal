@@ -7,7 +7,7 @@ control what context is shared with each AI model.
 
 from typing import Any
 
-from context_compressor import ContextCompressor
+from dalal_ai.core.context_compressor import ContextCompressor
 
 
 class FlaggedContextManager:

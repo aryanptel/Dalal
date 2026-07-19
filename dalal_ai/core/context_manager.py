@@ -40,9 +40,14 @@ class ContextManager:
                 ]
                 
                 # Ensure all loaded messages have a flag field
+                flags_loaded = 0
                 for msg in self.messages:
                     if "flag" not in msg:
                         msg["flag"] = None
+                    elif msg["flag"] is not None:
+                        flags_loaded += 1
+                
+                print(f"[ContextManager] Restored {len(self.messages)} messages with {flags_loaded} flags set.")
                         
                 self.last_used_model = data.get("last_used_model")
                 if not isinstance(self.last_used_model, str):
@@ -175,19 +180,39 @@ class ContextManager:
         self.last_used_model = None
         self._auto_save()
 
-    def get_stats(self) -> dict:
-        """Return summary statistics."""
-        user_msgs = sum(1 for m in self.messages if m["role"] == "user")
-        asst_msgs = sum(1 for m in self.messages if m["role"] == "assistant")
-        models_used = set(m["model"] for m in self.messages)
+    def get_stats(self) -> dict[str, Any]:
+        """Return basic statistics about the current history."""
         total_chars = sum(len(m["content"]) for m in self.messages)
+        models = {m["model"] for m in self.messages if m["role"] == "assistant"}
         return {
             "total_messages": len(self.messages),
-            "user_messages": user_msgs,
-            "assistant_messages": asst_msgs,
-            "models_used": sorted(models_used),
             "total_characters": total_chars,
+            "models_used": list(models),
         }
+
+    def export_session(self, export_dir: str) -> tuple[str, str]:
+        import datetime
+        os.makedirs(export_dir, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        json_path = os.path.join(export_dir, f"session_export_{timestamp}.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "last_used_model": self.last_used_model,
+                "messages": self.messages
+            }, f, indent=2)
+            
+        md_path = os.path.join(export_dir, f"session_transcript_{timestamp}.md")
+        lines = ["# Chat Session Transcript\n"]
+        for msg in self.messages:
+            role_label = "User" if msg["role"] == "user" else f"Assistant ({msg['model']})"
+            ts = msg.get("timestamp", "")
+            lines.append(f"### {role_label} [{ts}]\n\n{msg['content']}\n\n---\n")
+            
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+            
+        return json_path, md_path
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
