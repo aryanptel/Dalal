@@ -89,19 +89,30 @@ class Orchestrator:
 
         is_switch = self.context.is_model_switch(platform)
 
-        if is_switch and self.context.messages:
-            self._status(
-                f"🔄 Context switch detected → injecting history into {platform}"
-            )
+        needs_context = is_switch
+        if flagged_mgr and flagged_mgr.has_pending_context(self.context.messages, platform, selected_red_ids):
+            needs_context = True
+
+        if needs_context and self.context.messages:
+            if is_switch:
+                self._status(
+                    f"🔄 Context switch detected → injecting history into {platform}"
+                )
+            else:
+                self._status(
+                    f"🟢 Injecting pending flagged context into {platform}"
+                )
             if flagged_mgr:
                 selected = flagged_mgr.build_context(
                     self.context.messages, platform, selected_red_ids
                 )
+                transcript_limit = None
             else:
                 compressor = ContextCompressor()
                 selected = compressor.build_context(self.context.messages, user_message)
+                transcript_limit = 20000
                 
-            transcript = self.context.build_context_transcript(messages=selected, max_chars=12000)
+            transcript = self.context.build_context_transcript(messages=selected, max_chars=transcript_limit)
             if transcript:
                 full_prompt = f"{transcript}\n\n**User:** {user_message}"
             else:

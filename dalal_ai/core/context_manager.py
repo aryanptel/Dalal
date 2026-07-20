@@ -103,16 +103,16 @@ class ContextManager:
             self.messages[index]["flag"] = new_flag
             self._auto_save()
 
-    def build_context_transcript(self, max_chars: int = 12000, messages: list[dict[str, Any]] | None = None) -> str:
+    def build_context_transcript(self, max_chars: int | None = 20000, messages: list[dict[str, Any]] | None = None) -> str:
         """
         Format the entire conversation history into a markdown transcript
         block suitable for pasting into a new platform's input box.
 
         Parameters
         ----------
-        max_chars : int
+        max_chars : int | None
             Maximum character length for the transcript. Oldest messages
-            are trimmed first if the limit is exceeded.
+            are trimmed first if the limit is exceeded. If None, no truncation occurs.
         messages : list[dict[str, Any]], optional
             Optional specific list of messages to format. If not provided,
             defaults to self.messages.
@@ -125,7 +125,7 @@ class ContextManager:
         if not msgs_to_format:
             return ""
 
-        if max_chars <= 0:
+        if max_chars is not None and max_chars <= 0:
             return ""
 
         # Build lines in chronological order so the transcript remains natural.
@@ -147,9 +147,10 @@ class ContextManager:
 
         body = "\n\n".join(lines)
 
-        # Truncate from the front (oldest messages) if over limit.  A single
-        # very long latest message is trimmed too, so the documented maximum
-        # is always honoured.
+        # Truncate from the front (oldest messages) if over limit.
+        if max_chars is None:
+            return header + body + footer
+
         marker = "[...earlier messages trimmed...]\n\n"
         available = max_chars - len(header) - len(footer)
         if available <= 0:

@@ -72,3 +72,29 @@ class FlaggedContextManager:
                 delivered_to_model.add(i)
 
         return context_msgs
+
+    def has_pending_context(
+        self,
+        chat_history: list[dict[str, Any]],
+        target_model: str,
+        selected_red_ids: list[int] | None = None
+    ) -> bool:
+        """Returns True if there is context that needs to be delivered to the target model."""
+        if selected_red_ids is None:
+            selected_red_ids = []
+
+        has_any_flags = any(msg.get("flag") in {"green", "red"} for msg in chat_history)
+        if not has_any_flags:
+            return False
+
+        delivered_to_model = self.session_delivered.get(target_model, set())
+        is_first_time = len(delivered_to_model) == 0
+
+        for i, msg in enumerate(chat_history):
+            flag = msg.get("flag")
+            if is_first_time and flag == "green":
+                return True
+            elif flag == "red" and i in selected_red_ids and i not in delivered_to_model:
+                return True
+
+        return False
