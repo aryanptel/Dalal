@@ -22,10 +22,10 @@ from dalal_ai.core.context_manager import ContextManager
 from dalal_ai.core.flagged_context_manager import FlaggedContextManager
 from dalal_ai.core.orchestrator import Orchestrator
 from utils.exceptions import BrowserActionRequired, ResponseCaptureTimeout
+from utils.paths import get_config_path, get_history_path, init_user_data, get_user_data_dir
+from utils.logger import logger
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-CONFIG_FILE = "config.yaml"
-HISTORY_FILE = "chat_history.json"
 
 PLATFORM_LABELS = {
     "chatgpt": "ChatGPT",
@@ -49,11 +49,9 @@ PLATFORM_COLORS = {
 }
 
 
-def get_project_root() -> str:
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 def load_config() -> dict[str, Any]:
-    config_path = os.path.join(get_project_root(), CONFIG_FILE)
+    init_user_data()
+    config_path = get_config_path()
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
@@ -62,7 +60,7 @@ def init_session_state(config: dict[str, Any]) -> None:
     if "initialized" in st.session_state:
         return
 
-    history_path = os.path.join(get_project_root(), HISTORY_FILE)
+    history_path = get_history_path()
     st.session_state.context = ContextManager(persist_path=history_path)
     st.session_state.config = config
     st.session_state.platforms = list(config["platforms"].keys())
@@ -104,11 +102,13 @@ def connect_browser() -> None:
         )
         st.session_state.connected = True
         st.session_state.connection_error = ""
+        logger.info("Browser connected and Orchestrator created.")
     except Exception as exc:
         st.session_state.browser = None
         st.session_state.orchestrator = None
         st.session_state.connected = False
         st.session_state.connection_error = str(exc)
+        logger.error(f"Failed to connect browser: {exc}")
 
 
 def render_model_badge(model: str) -> str:
@@ -386,7 +386,7 @@ with st.sidebar:
 
     if st.button("💾 Export Session", use_container_width=True):
         export_dir = st.session_state.config.get("export_directory", "exports")
-        export_dir_full = os.path.join(get_project_root(), export_dir)
+        export_dir_full = os.path.join(get_user_data_dir(), export_dir)
         j_path, m_path = st.session_state.context.export_session(export_dir_full)
         st.toast(f"Exported to {export_dir_full}")
 

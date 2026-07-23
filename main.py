@@ -47,11 +47,10 @@ from browser_manager import BrowserManager
 from context_manager import ContextManager
 from orchestrator import Orchestrator
 from utils.exceptions import BrowserActionRequired, ResponseCaptureTimeout
-
+from utils.paths import get_config_path, get_history_path, init_user_data
+from utils.logger import logger
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-CONFIG_FILE = "config.yaml"
-HISTORY_FILE = "chat_history.json"
 
 BANNER = f"""
 {Fore.CYAN}╔══════════════════════════════════════════════════════════════╗
@@ -98,7 +97,8 @@ PLATFORM_ICONS = {
 
 def load_config() -> dict:
     """Load and return the YAML configuration."""
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), CONFIG_FILE)
+    init_user_data()
+    config_path = get_config_path()
     if not os.path.isfile(config_path):
         print(f"{Fore.RED}❌ Config file not found: {config_path}{Style.RESET_ALL}")
         sys.exit(1)
@@ -184,7 +184,7 @@ def main() -> None:
     platforms = list(config["platforms"].keys())
 
     # Initialize components
-    history_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), HISTORY_FILE)
+    history_path = get_history_path()
     context = ContextManager(persist_path=history_path)
 
     browser_name = config["browser"].get("use", "edge").capitalize()
