@@ -10,15 +10,15 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
 
 class ContextManager:
     """Tracks the full conversation history across all platforms."""
 
-    def __init__(self, persist_path: str | None = None):
+    def __init__(self, persist_path: Optional[str] = None):
         self.messages: list[dict[str, Any]] = []
-        self.last_used_model: str | None = None
+        self.last_used_model: Optional[str] = None
         self._persist_path = persist_path
 
         # Load persisted history if it exists
@@ -59,7 +59,7 @@ class ContextManager:
 
     # ── Core Operations ───────────────────────────────────────────────────────
 
-    def add_message(self, role: str, content: str, model: str, flag: str | None = None) -> None:
+    def add_message(self, role: str, content: str, model: str, flag: Optional[str] = None) -> None:
         """
         Record a message in the local history.
 
@@ -68,7 +68,7 @@ class ContextManager:
         role : str   "user" or "assistant"
         content : str   The message text
         model : str   Platform name (chatgpt / claude / gemini)
-        flag : str | None  "green", "red", or None
+        flag : Optional[str]  "green", "red", or None
         """
         if role not in {"user", "assistant"}:
             raise ValueError("role must be 'user' or 'assistant'")
@@ -95,7 +95,7 @@ class ContextManager:
             return False  # first message ever — no switch
         return self.last_used_model != target_model
 
-    def update_flag(self, index: int, new_flag: str | None) -> None:
+    def update_flag(self, index: int, new_flag: Optional[str]) -> None:
         """Update the flag for a specific message and save."""
         if 0 <= index < len(self.messages):
             if new_flag not in {None, "green", "red"}:
@@ -103,14 +103,14 @@ class ContextManager:
             self.messages[index]["flag"] = new_flag
             self._auto_save()
 
-    def build_context_transcript(self, max_chars: int | None = 20000, messages: list[dict[str, Any]] | None = None) -> str:
+    def build_context_transcript(self, max_chars: Optional[int] = 20000, messages: Optional[list[dict[str, Any]]] = None) -> str:
         """
         Format the entire conversation history into a markdown transcript
         block suitable for pasting into a new platform's input box.
 
         Parameters
         ----------
-        max_chars : int | None
+        max_chars : Optional[int]
             Maximum character length for the transcript. Oldest messages
             are trimmed first if the limit is exceeded. If None, no truncation occurs.
         messages : list[dict[str, Any]], optional
@@ -168,7 +168,7 @@ class ContextManager:
 
         return header + body + footer
 
-    def get_last_assistant_response(self) -> str | None:
+    def get_last_assistant_response(self) -> Optional[str]:
         """Return the content of the most recent assistant message, or None."""
         for msg in reversed(self.messages):
             if msg["role"] == "assistant":

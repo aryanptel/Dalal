@@ -5,7 +5,7 @@ Provides context filtering based on explicit user flags (green/red) to precisely
 control what context is shared with each AI model.
 """
 
-from typing import Any
+from typing import Any, Optional
 
 from dalal_ai.core.context_compressor import ContextCompressor
 
@@ -33,7 +33,7 @@ class FlaggedContextManager:
         self,
         chat_history: list[dict[str, Any]],
         target_model: str,
-        selected_red_ids: list[int] | None = None
+        selected_red_ids: Optional[list[int]] = None
     ) -> list[dict[str, Any]]:
         """
         Builds the context list of messages to be sent to the target model.
@@ -77,7 +77,7 @@ class FlaggedContextManager:
         self,
         chat_history: list[dict[str, Any]],
         target_model: str,
-        selected_red_ids: list[int] | None = None
+        selected_red_ids: Optional[list[int]] = None
     ) -> bool:
         """Returns True if there is context that needs to be delivered to the target model."""
         if selected_red_ids is None:

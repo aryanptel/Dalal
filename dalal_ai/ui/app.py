@@ -12,7 +12,7 @@ Run:
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Optional
 
 import streamlit as st
 import yaml
@@ -123,7 +123,7 @@ def render_model_badge(model: str) -> str:
     )
 
 
-def render_flag_controls(index: int, flag: str | None) -> None:
+def render_flag_controls(index: int, flag: Optional[str]) -> None:
     c1, c2, c3 = st.columns([1, 1, 15])
     
     def toggle_green():

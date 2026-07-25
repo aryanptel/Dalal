@@ -8,13 +8,13 @@ Implements the hybrid context strategy:
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from dalal_ai.browser.browser_manager import BrowserManager
 from dalal_ai.core.context_manager import ContextManager
 from utils.exceptions import BrowserActionRequired, ResponseCaptureTimeout
 
-StatusCallback = Callable[[str], None] | None
+StatusCallback = Optional[Callable[[str], None]]
 
 from dalal_ai.core.context_compressor import ContextCompressor
 from dalal_ai.core.flagged_context_manager import FlaggedContextManager
@@ -56,8 +56,8 @@ class Orchestrator:
         self,
         platform: str,
         user_message: str,
-        flagged_mgr: FlaggedContextManager | None = None,
-        selected_red_ids: list[int] | None = None
+        flagged_mgr: Optional[FlaggedContextManager] = None,
+        selected_red_ids: Optional[list[int]] = None
     ) -> str:
         """
         Send a message to the specified platform and return the response.

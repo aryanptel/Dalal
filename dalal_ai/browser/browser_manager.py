@@ -21,7 +21,7 @@ import threading
 import time
 import sys
 import atexit
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 # ── Fix Windows terminal encoding ─────────────────────────────────────────────
 if sys.platform == "win32":
@@ -33,7 +33,7 @@ if sys.platform == "win32":
 # ── Fix Windows asyncio event loop policy ─────────────────────────────────────
 from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page, Playwright
 
-StatusCallback = Callable[[str], None] | None
+StatusCallback = Optional[Callable[[str], None]]
 
 # Detect OS once
 IS_MAC = platform.system() == "Darwin"
@@ -134,7 +134,7 @@ _RESPONSE_TO_MARKDOWN_SCRIPT = r"""
 class _PlaywrightWorker:
     """Singleton background thread that executes all Playwright operations."""
 
-    _instance: _PlaywrightWorker | None = None
+    _instance: Optional['_PlaywrightWorker'] = None
     _lock = threading.Lock()
 
     @classmethod
@@ -149,7 +149,7 @@ class _PlaywrightWorker:
         # A Sync Playwright instance owns a running event loop. It must be
         # started only once on this persistent thread, even if Streamlit
         # recreates BrowserManager during a rerun.
-        self._playwright: Playwright | None = None
+        self._playwright: Optional[Playwright] = None
         self._thread = threading.Thread(
             target=self._loop, daemon=True, name="playwright-worker"
         )
@@ -225,10 +225,10 @@ class BrowserManager:
         self._on_status = on_status
 
         # Playwright objects (only touched on the worker thread)
-        self._pw: Playwright | None = None
-        self._browser: Browser | None = None
-        self._context: BrowserContext | None = None
-        self._launched_process: subprocess.Popen | None = None
+        self._pw: Optional[Playwright] = None
+        self._browser: Optional[Browser] = None
+        self._context: Optional[BrowserContext] = None
+        self._launched_process: Optional[subprocess.Popen] = None
         self._pages: dict[str, Page] = {}
         # Snapshot the page immediately before each send.  Without this, a
         # completed reply already visible in the tab can be mistaken for the
@@ -284,7 +284,7 @@ class BrowserManager:
 
     # ── Browser Auto-Launch (runs on worker thread) ───────────────────────────
 
-    def _find_browser_executable(self) -> str | None:
+    def _find_browser_executable(self) -> Optional[str]:
         browser_choice = self._browser_conf.get("use", "edge")
         paths_conf = self._browser_conf.get("paths", {}).get(browser_choice, {})
         os_key = "mac" if IS_MAC else "windows"
@@ -598,7 +598,7 @@ class BrowserManager:
         finally:
             self._response_baselines.pop(platform, None)
 
-    def _get_last_response_text(self, page: Page, selector: str) -> str | None:
+    def _get_last_response_text(self, page: Page, selector: str) -> Optional[str]:
         return self._get_response_snapshot(page, selector)[1] or None
 
     def _get_response_snapshot(self, page: Page, selector: str) -> tuple[int, str]:
