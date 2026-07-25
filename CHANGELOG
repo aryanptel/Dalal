@@ -1,6 +1,16 @@
+Dalal AI - Changelog
+
+Version 1.0.2 (Recent Refactoring)
+- Extracted DOM-to-Markdown script to a standalone `response_script.js` file.
+- Removed dead code (`temp_split.py`, `split_browser.py`).
+- Added strict type hinting and `__future__` annotations across all core modules.
+- Modernized dependency requirements (added `scikit-learn` and `numpy`).
+- Fixed broken absolute imports in `main.py` CLI.
+- Re-wrote all system documentation (DETAILED_DESIGN, GUIDE, README).
+
 Version 1.0.1
-- Added macOS and Linux build support.
+- Added macOS and Linux build support via PyInstaller.
 - Backward compatibility fixes for Python 3.8.
 
 Version 1.0.0
-- Initial professional release
+- Initial professional release.

@@ -1,13 +1,13 @@
-# 🧠 AI Web Chat Orchestrator — Setup & Usage Guide
+# 🧠 Dalal AI — User & Setup Guide
 
 A tool that connects to your browser and lets you chat with **ChatGPT**, **Claude**, **Gemini**, and **DeepSeek** from a single interface — preserving full conversation context when you switch between models.
 
 **Two ways to use it:**
-- **Web UI (recommended)** — `python -m dalal_ai` — rich Markdown, LaTeX equations, code blocks
-- **Terminal CLI** — `python main.py` — lightweight text interface
+- **Web UI (recommended)** — `python -m dalal_ai` — rich Markdown, LaTeX equations, code blocks, deterministic flagging.
+- **Terminal CLI** — `python main.py` — lightweight text interface.
 
 **Supported browsers:** Microsoft Edge, Brave  
-**Supported OS:** Windows 10/11, macOS (including Monterey 12.x)
+**Supported OS:** Windows 10/11, macOS, Linux  
 
 ---
 
@@ -24,11 +24,11 @@ A tool that connects to your browser and lets you chat with **ChatGPT**, **Claud
 └───────────────────┘         └──────────────────────────────────┘
 ```
 
-The tool connects to a **real browser** via CDP (Chrome DevTools Protocol). It types your messages into the actual web interfaces and reads responses — **no API keys needed**. You use the free-tier web versions of each AI.
+The tool connects to a **real browser** via CDP (Chrome DevTools Protocol). It types your messages into the actual web interfaces and reads responses. **No API keys needed**. You use the free-tier web versions of each AI.
 
 When you **switch models**, it intelligently injects history using a **Flagged Context System**. You can flag messages as 🟩 Green (global, always sent to new models) or 🟥 Red (on-demand, selectively attached when switching). This ensures the new model has precise context without blowing up your token limits or redundantly sending the same history twice.
 
-**Auto-Launch** — The tool can automatically start your browser in debug mode. No manual terminal commands needed.
+**Auto-Launch** — The tool can automatically start your browser in debug mode using an isolated automation profile so it doesn't mess with your everyday browsing.
 
 ---
 
@@ -36,7 +36,7 @@ When you **switch models**, it intelligently injects history using a **Flagged C
 
 - **Python 3.8+** installed (3.10+ recommended)
 - **Microsoft Edge** or **Brave** browser installed
-  - ⚠️ Firefox is NOT supported (different debugging protocol)
+  - ⚠️ Firefox is NOT supported (different debugging protocol).
 - Free accounts on the platforms you want to use:
   - [ChatGPT](https://chatgpt.com)
   - [Claude](https://claude.ai)
@@ -53,6 +53,8 @@ When you **switch models**, it intelligently injects history using a **Flagged C
 pip install -r requirements.txt
 python -m playwright install chromium
 ```
+
+*(Note: Ensure you have `scikit-learn` and `numpy` installed, which are provided in the latest `requirements.txt`).*
 
 ### 2. Choose Your Browser
 
@@ -79,10 +81,10 @@ Your browser opens at **http://localhost:8501** with a chat interface that rende
 - **Model badges** — colour-coded labels per platform
 
 The web UI will:
-1. ✅ Auto-detect your browser executable
-2. 🚀 Launch it in debug mode (separate profile — your normal browser is unaffected)
-3. 📡 Connect via CDP
-4. 📑 Open tabs for each AI platform
+1. ✅ Auto-detect your browser executable.
+2. 🚀 Launch it in debug mode (separate profile — your normal browser is unaffected).
+3. 📡 Connect via CDP.
+4. 📑 Open tabs for each AI platform.
 
 **First time only:** Log into ChatGPT, Claude, Gemini, and DeepSeek in the browser tabs that open. After that, your sessions persist in the automation profile.
 
@@ -96,7 +98,7 @@ Use slash commands (`/chatgpt`, `/claude`, etc.) to switch models. Responses app
 
 ---
 
-## Switching Between Edge and Brave
+## Configuring the Browser
 
 Just change one line in `config.yaml`:
 
@@ -105,7 +107,7 @@ browser:
   use: "edge"    # Options: "edge" or "brave"
 ```
 
-The tool auto-detects the executable path. If your browser is installed in a non-standard location, update the paths in config.yaml:
+The tool auto-detects the executable path on Windows and macOS. If your browser is installed in a non-standard location, or you are running on Linux, update the paths in `config.yaml`:
 
 ```yaml
   paths:
@@ -124,51 +126,6 @@ The tool auto-detects the executable path. If your browser is installed in a non
 
 ---
 
-## macOS Monterey (12.x) Support
-
-Yes, this tool works on macOS Monterey! Here's the setup:
-
-### Install Python (if needed)
-```bash
-brew install python@3.11
-```
-
-### Install Dependencies
-```bash
-pip3 install -r requirements.txt
-python3 -m playwright install chromium
-```
-
-### Configure for Mac
-The tool auto-detects macOS and uses the correct paths. Just set your browser in `config.yaml`:
-
-```yaml
-browser:
-  use: "edge"       # or "brave" — both work on macOS
-  auto_launch: true
-```
-
-### Run
-```bash
-python3 main.py
-```
-
-### Manual Launch (if auto-launch doesn't work)
-
-**Edge on macOS:**
-```bash
-"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" --remote-debugging-port=9222 --user-data-dir="/tmp/orchestrator_browser_profile"
-```
-
-**Brave on macOS:**
-```bash
-"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" --remote-debugging-port=9222 --user-data-dir="/tmp/orchestrator_browser_profile"
-```
-
-> 💡 macOS uses `⌘+A` / `⌘+V` for keyboard shortcuts — the tool handles this automatically.
-
----
-
 ## Web UI Features
 
 | Feature | Description |
@@ -184,7 +141,7 @@ python3 main.py
 
 ### LaTeX Examples
 
-The web UI renders math returned by models, for example:
+The web UI renders math returned by models seamlessly extracted by the underlying `response_script.js`, for example:
 
 - Inline: `$f(x) = x^2 + 2x + 1$`
 - Block: `$$\sum_{n=1}^{\infty} \frac{1}{n^2} = \frac{\pi^2}{6}$$`
@@ -209,61 +166,6 @@ The web UI renders math returned by models, for example:
 
 ---
 
-## Example Session
-
-```
-  🟢 [chatgpt] ▶ Write a haiku about rain
-
-  📤 Sending to chatgpt...
-  ⏳ Waiting for response to start... started!
-  ⏳ Waiting for response to complete... done!
-
-  ┌────────────────────────────────────────────────────────────────┐
-  │ 🟢 CHATGPT
-  ├────────────────────────────────────────────────────────────────┤
-  │ Gentle drops descend
-  │ Painting silver on the glass
-  │ Earth breathes, sky weeps soft
-  └────────────────────────────────────────────────────────────────┘
-
-  🟢 [chatgpt] ▶ /deepseek
-
-  ┌─ 🟣 Active Model: DEEPSEEK ─┐
-
-  🟣 [deepseek] ▶ Rewrite that haiku in Japanese
-  🔄 Context switch detected → injecting history into deepseek
-  📤 Sending to deepseek...
-```
-
----
-
-## Project Structure
-
-```text
-AiOrchestor/
-├── dalal_ai/            # Main application package
-│   ├── __main__.py      # App entry point (`python -m dalal_ai`)
-│   ├── ui/              # User Interface
-│   │   └── app.py       # Web UI (Streamlit)
-│   ├── core/            # Context & orchestration
-│   │   ├── orchestrator.py
-│   │   ├── context_manager.py
-│   │   ├── flagged_context_manager.py
-│   │   └── context_compressor.py
-│   └── browser/         # Browser automation
-│       └── browser_manager.py
-├── doc/                 # Documentation
-│   └── file_upload_design.md
-├── exports/             # Exported session transcripts
-├── main.py              # CLI entry point & interactive loop
-├── config.yaml          # Browser choice, selectors, timing
-├── requirements.txt     # Python dependencies
-├── DETAILED_DESIGN.md   # Design document
-└── GUIDE.md             # This file
-```
-
----
-
 ## Building a Standalone Executable
 
 You can compile Dalal AI into a standalone application that does not require Python to be installed. The build script automatically detects your operating system and creates the appropriate release package.
@@ -272,7 +174,7 @@ You can compile Dalal AI into a standalone application that does not require Pyt
 python build.py
 ```
 
-- **Windows:** Creates a `.exe` Installer using Inno Setup (if installed) or falls back to a Zip archive in the `release/` folder.
+- **Windows:** Creates a `.exe` Installer using Inno Setup (if `ISCC.exe` is installed) or falls back to a Zip archive in the `release/` folder.
 - **macOS:** Creates a standalone Mac binary packaged into a `.zip` archive in the `release/` folder.
 - **Linux:** Creates a standalone ELF binary packaged into a `.tar.gz` archive in the `release/` folder.
 
@@ -283,7 +185,7 @@ python build.py
 | Problem | Solution |
 |---------|----------|
 | "Could not auto-launch edge" | Close all Edge windows first, then retry. Or set `auto_launch: false` and launch manually. |
-| "Could not find edge executable" | Update the path in `config.yaml` → `browser.paths.edge.windows` |
+| "Could not find edge executable" | Update the path in `config.yaml` → `browser.paths.edge.*`. |
 | "Cannot find input box" | The platform's UI changed. Update `input_selector` in `config.yaml`. Or type manually in the browser — the tool will wait. |
 | Response times out | Increase `max_response_wait_s` in `config.yaml` (default: 180s). |
 | CAPTCHA appears | Solve it manually in the browser. Since it's a real browser, you only solve it once. |
@@ -291,14 +193,10 @@ python build.py
 
 ---
 
-## Tips
+## Pro Tips
 
 1. **Auto-launch is on by default** — the tool finds and starts your browser automatically. Set `auto_launch: false` in config.yaml if you prefer to manage it yourself.
-
 2. **Your normal browser is NOT affected** — the tool uses a separate `--user-data-dir` profile. Your bookmarks, passwords, and extensions are untouched.
-
 3. **History persists** — saved to `chat_history.json`. Even if you close and reopen the tool, it remembers the conversation. Use `/clear` to start fresh.
-
 4. **Watch the browser** — you can see the automation happen live. Useful for catching CAPTCHAs or login prompts.
-
 5. **Switching browsers** — just change `use: "edge"` to `use: "brave"` in config.yaml. Close the current browser first.

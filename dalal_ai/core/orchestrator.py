@@ -11,13 +11,13 @@ from __future__ import annotations
 from typing import Any, Callable, Optional
 
 from dalal_ai.browser.browser_manager import BrowserManager
+from dalal_ai.core.context_compressor import ContextCompressor
 from dalal_ai.core.context_manager import ContextManager
+from dalal_ai.core.flagged_context_manager import FlaggedContextManager
 from utils.exceptions import BrowserActionRequired, ResponseCaptureTimeout
 
 StatusCallback = Optional[Callable[[str], None]]
 
-from dalal_ai.core.context_compressor import ContextCompressor
-from dalal_ai.core.flagged_context_manager import FlaggedContextManager
 
 class Orchestrator:
     """
@@ -41,14 +41,15 @@ class Orchestrator:
         context: ContextManager,
         config: dict[str, Any],
         on_status: StatusCallback = None,
-    ):
+    ) -> None:
         self.browser = browser
         self.context = context
         self.config = config
-        self._platforms = config["platforms"]
+        self._platforms: dict[str, dict] = config["platforms"]
         self._on_status = on_status
 
     def _status(self, message: str) -> None:
+        """Emit a progress message to the registered callback."""
         if self._on_status:
             self._on_status(message)
 
@@ -57,7 +58,7 @@ class Orchestrator:
         platform: str,
         user_message: str,
         flagged_mgr: Optional[FlaggedContextManager] = None,
-        selected_red_ids: Optional[list[int]] = None
+        selected_red_ids: Optional[list[int]] = None,
     ) -> str:
         """
         Send a message to the specified platform and return the response.
@@ -74,7 +75,7 @@ class Orchestrator:
             The user's raw message text.
         flagged_mgr : FlaggedContextManager, optional
             The manager handling the red/green flag filtering.
-        selected_red_ids: list[int], optional
+        selected_red_ids : list[int], optional
             The indices of red-flagged messages explicitly selected by the user.
 
         Returns
@@ -90,7 +91,9 @@ class Orchestrator:
         is_switch = self.context.is_model_switch(platform)
 
         needs_context = is_switch
-        if flagged_mgr and flagged_mgr.has_pending_context(self.context.messages, platform, selected_red_ids):
+        if flagged_mgr and flagged_mgr.has_pending_context(
+            self.context.messages, platform, selected_red_ids
+        ):
             needs_context = True
 
         if needs_context and self.context.messages:
@@ -102,6 +105,7 @@ class Orchestrator:
                 self._status(
                     f"🟢 Injecting pending flagged context into {platform}"
                 )
+
             if flagged_mgr:
                 selected = flagged_mgr.build_context(
                     self.context.messages, platform, selected_red_ids
@@ -111,12 +115,11 @@ class Orchestrator:
                 compressor = ContextCompressor()
                 selected = compressor.build_context(self.context.messages, user_message)
                 transcript_limit = 20000
-                
-            transcript = self.context.build_context_transcript(messages=selected, max_chars=transcript_limit)
-            if transcript:
-                full_prompt = f"{transcript}\n\n**User:** {user_message}"
-            else:
-                full_prompt = user_message
+
+            transcript = self.context.build_context_transcript(
+                messages=selected, max_chars=transcript_limit
+            )
+            full_prompt = f"{transcript}\n\n**User:** {user_message}" if transcript else user_message
         else:
             full_prompt = user_message
 

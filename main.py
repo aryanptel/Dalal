@@ -43,9 +43,9 @@ except ImportError:
             return ""
     Fore = Style = _Dummy()
 
-from browser_manager import BrowserManager
-from context_manager import ContextManager
-from orchestrator import Orchestrator
+from dalal_ai.browser.browser_manager import BrowserManager
+from dalal_ai.core.context_manager import ContextManager
+from dalal_ai.core.orchestrator import Orchestrator
 from utils.exceptions import BrowserActionRequired, ResponseCaptureTimeout
 from utils.paths import get_config_path, get_history_path, init_user_data
 from utils.logger import logger

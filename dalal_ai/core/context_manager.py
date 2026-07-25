@@ -12,11 +12,13 @@ import os
 from datetime import datetime
 from typing import Any, Optional
 
+from utils.logger import logger
+
 
 class ContextManager:
     """Tracks the full conversation history across all platforms."""
 
-    def __init__(self, persist_path: Optional[str] = None):
+    def __init__(self, persist_path: Optional[str] = None) -> None:
         self.messages: list[dict[str, Any]] = []
         self.last_used_model: Optional[str] = None
         self._persist_path = persist_path
@@ -38,7 +40,7 @@ class ContextManager:
                     and isinstance(message.get("content"), str)
                     and isinstance(message.get("model"), str)
                 ]
-                
+
                 # Ensure all loaded messages have a flag field
                 flags_loaded = 0
                 for msg in self.messages:
@@ -46,16 +48,18 @@ class ContextManager:
                         msg["flag"] = None
                     elif msg["flag"] is not None:
                         flags_loaded += 1
-                
-                print(f"[ContextManager] Restored {len(self.messages)} messages with {flags_loaded} flags set.")
-                        
+
+                logger.info(
+                    f"Restored {len(self.messages)} messages with {flags_loaded} flags set."
+                )
+
                 self.last_used_model = data.get("last_used_model")
                 if not isinstance(self.last_used_model, str):
                     self.last_used_model = (
                         self.messages[-1]["model"] if self.messages else None
                     )
-            except (json.JSONDecodeError, IOError, ValueError, TypeError):
-                pass  # start fresh
+            except (json.JSONDecodeError, IOError, ValueError, TypeError) as exc:
+                logger.warning(f"Could not load history from {persist_path}: {exc}")
 
     # ── Core Operations ───────────────────────────────────────────────────────
 
@@ -103,10 +107,14 @@ class ContextManager:
             self.messages[index]["flag"] = new_flag
             self._auto_save()
 
-    def build_context_transcript(self, max_chars: Optional[int] = 20000, messages: Optional[list[dict[str, Any]]] = None) -> str:
+    def build_context_transcript(
+        self,
+        max_chars: Optional[int] = 20000,
+        messages: Optional[list[dict[str, Any]]] = None,
+    ) -> str:
         """
-        Format the entire conversation history into a markdown transcript
-        block suitable for pasting into a new platform's input box.
+        Format conversation history into a markdown transcript block suitable
+        for pasting into a new platform's input box.
 
         Parameters
         ----------
@@ -114,8 +122,7 @@ class ContextManager:
             Maximum character length for the transcript. Oldest messages
             are trimmed first if the limit is exceeded. If None, no truncation occurs.
         messages : list[dict[str, Any]], optional
-            Optional specific list of messages to format. If not provided,
-            defaults to self.messages.
+            Specific list of messages to format. Defaults to self.messages.
 
         Returns
         -------
@@ -185,34 +192,38 @@ class ContextManager:
         """Return basic statistics about the current history."""
         total_chars = sum(len(m["content"]) for m in self.messages)
         models = {m["model"] for m in self.messages if m["role"] == "assistant"}
+        user_count = sum(1 for m in self.messages if m["role"] == "user")
+        assistant_count = sum(1 for m in self.messages if m["role"] == "assistant")
         return {
             "total_messages": len(self.messages),
             "total_characters": total_chars,
             "models_used": list(models),
+            "user_messages": user_count,
+            "assistant_messages": assistant_count,
         }
 
     def export_session(self, export_dir: str) -> tuple[str, str]:
-        import datetime
+        """Export current session as JSON and Markdown files to *export_dir*."""
         os.makedirs(export_dir, exist_ok=True)
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
         json_path = os.path.join(export_dir, f"session_export_{timestamp}.json")
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump({
                 "last_used_model": self.last_used_model,
                 "messages": self.messages
             }, f, indent=2)
-            
+
         md_path = os.path.join(export_dir, f"session_transcript_{timestamp}.md")
         lines = ["# Chat Session Transcript\n"]
         for msg in self.messages:
             role_label = "User" if msg["role"] == "user" else f"Assistant ({msg['model']})"
             ts = msg.get("timestamp", "")
             lines.append(f"### {role_label} [{ts}]\n\n{msg['content']}\n\n---\n")
-            
+
         with open(md_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
-            
+
         return json_path, md_path
 
     # ── Persistence ───────────────────────────────────────────────────────────

@@ -6,19 +6,19 @@
 The purpose of this document is to provide a comprehensive, deeply technical breakdown of the **Dalal AI** tool. It serves as both a **Detailed Design Document (DDD)** and an **Interface Control Document (ICD)**. This document is intended for future developers and AI assistants to quickly and thoroughly understand the architecture, internal structures, data flows, and configuration interfaces of the codebase without needing to read every line of code.
 
 ### 1.2 Scope
-This document covers the entire Dalal AI system, including the Playwright browser automation layer, the context management and compression algorithms (both mathematical and manual flag-based), the routing orchestrator, and the Streamlit/CLI frontends.
+This document covers the entire Dalal AI system, including the Playwright browser automation layer, the context management and compression algorithms (both mathematical and manual flag-based), the routing orchestrator, and the Streamlit/CLI frontends. It reflects the updated architecture incorporating strict type hints, dependency modernization, and robust thread-safety mechanisms.
 
 ---
 
 ## 2. System Architecture Overview
 
-Dalal AI operates as a local bridge between a user interface (Web/CLI) and a real, locally installed web browser running in remote-debugging mode. 
+Dalal AI operates as a local bridge between a user interface (Web/CLI) and a real, locally installed web browser running in remote-debugging mode over CDP.
 
 **High-Level Data Flow:**
 1. **User Input:** The user types a message in `dalal_ai/ui/app.py` (Streamlit) or `main.py` (CLI).
 2. **Orchestrator Routing:** `dalal_ai/core/orchestrator.py` intercepts the message. If the user is switching to a new AI model, it invokes the Context Management layer to compile a historical transcript.
-3. **Context Generation:** `flagged_dalal_ai/core/context_manager.py` builds the transcript based on user-defined Green/Red flags (falling back to `context_compressor.py` if no flags exist). 
-4. **Browser Execution:** The final payload is handed to `dalal_ai/browser/browser_manager.py`, which executes DOM manipulations over the Chrome DevTools Protocol (CDP) to type the message into the active browser tab and extract the response.
+3. **Context Generation:** `dalal_ai/core/flagged_context_manager.py` builds the transcript based on user-defined Green/Red flags. If no flags exist, it falls back to `dalal_ai/core/context_compressor.py`.
+4. **Browser Execution:** The payload is handed to `dalal_ai/browser/browser_manager.py`, which executes DOM manipulations to type the message into the active browser tab and extract the response.
 5. **State Persistence:** The response is returned to the Orchestrator, logged via `dalal_ai/core/context_manager.py` into `chat_history.json`, and rendered back to the user.
 
 ---
@@ -33,52 +33,54 @@ Handles all direct interaction with the DOM of target platforms (ChatGPT, Claude
   - **Purpose:** Playwright's synchronous API relies on greenlets bound to the thread that creates them. Because Streamlit spawns multiple threads for reruns, directly invoking Playwright from Streamlit causes fatal thread-safety crashes. This worker maintains a single, persistent background thread containing the event loop.
   - **Methods:**
     - `run(fn, *args, **kwargs)`: Submits a callable to the queue and blocks via `concurrent.futures` until the Playwright thread completes it.
+
 - **`class BrowserManager`**
   - **Purpose:** The public API for browser automation. All public methods delegate to `_PlaywrightWorker.run()`.
   - **Key Methods:**
     - `connect()`: Checks if the CDP port is open. If not, reads `config.yaml` to auto-launch the browser binary (`msedge.exe` or `brave.exe`) with `--remote-debugging-port` and a separate `--user-data-dir`.
     - `_discover_platform_pages()`: Iterates through open tabs and matches domains. If a platform tab is missing, it opens a new one.
-    - `_send_organic_prompt_impl(platform, text)`: Brings the tab to focus. Uses JS/DOM events to clear the input box. For text > 500 chars or text containing newlines (`\n`), it uses clipboard pasting (`pyperclip`); otherwise, it simulates keystrokes (`typing_delay_ms`). Dispatches raw `input` events to bypass React state guards. This dual approach prevents premature form submissions caused by typing `Enter` keys on newlines.
-    - `_extract_stable_response_impl(platform)`: Implements a dynamic mutation observer. It samples the DOM using `_RESPONSE_TO_MARKDOWN_SCRIPT`. If the extracted text remains unchanged for `stability_samples` consecutive checks over `stability_wait_s`, the response is deemed complete.
-    - `close()`: Cleanly shuts down the Playwright worker thread and disconnects the CDP session. This is automatically registered with `atexit` to ensure graceful shutdown when the Streamlit session or CLI terminates.
-  - **`_RESPONSE_TO_MARKDOWN_SCRIPT` (JavaScript Constant):** Injected directly into the page to recursively walk the DOM of the response element. It recovers Markdown semantics (`##`, `**`, `>`) and extracts embedded LaTeX (from KaTeX/MathJax `annotation` tags or `alttext`) before Playwright reads the text.
+    - `_send_organic_prompt_impl(platform, text)`: Brings the tab to focus. Uses JS/DOM events to clear the input box. For text > 500 chars or text containing newlines (`\n`), it uses clipboard pasting (`pyperclip`); otherwise, it simulates keystrokes (`typing_delay_ms`). Dispatches raw `input` events to bypass React state guards.
+    - `_extract_stable_response_impl(platform)`: Implements a dynamic mutation observer. It samples the DOM using the extracted JS script. If the extracted text remains unchanged for `stability_samples` consecutive checks over `stability_wait_s`, the response is deemed complete.
+
+- **`response_script.js` (JavaScript Resource)**
+  - Loaded at runtime by the `BrowserManager`, this script is injected directly into the page to recursively walk the DOM of the response element. It recovers Markdown semantics (`##`, `**`, `>`) and extracts embedded LaTeX (from KaTeX/MathJax `annotation` tags or `alttext`) before Playwright reads the text.
 
 ### 3.2 Context Manager (`dalal_ai/core/context_manager.py`)
 The local database tracking conversation turns.
 
 - **`class ContextManager`**
   - **State Variables:** 
-    - `messages: list[dict]`: The active memory block holding all messages.
-    - `last_used_model: str`: Tracks the previous turn to detect model switches.
+    - `messages: list[dict[str, Any]]`: The active memory block holding all messages.
+    - `last_used_model: Optional[str]`: Tracks the previous turn to detect model switches.
   - **Key Methods:**
     - `add_message(role, content, model, flag=None)`: Appends a message containing the new `"flag"` field and triggers `_auto_save()`. When loading existing `chat_history.json`, older messages missing the flag field are automatically patched with `"flag": None`.
     - `build_context_transcript(max_chars, messages)`: Transforms a list of raw message dictionaries into a continuous Markdown transcript block, injecting chronological markers. Truncates from the *oldest* messages if `max_chars` is exceeded to protect browser input limits.
-    - `update_flag(index, new_flag)`: Modifies the flag state ("green", "red", or None) of a specific message. Enforces flag exclusivity (a message cannot be both green and red; setting one clears the other) and calls `_auto_save()` to persist state to disk.
+    - `update_flag(index, new_flag)`: Modifies the flag state ("green", "red", or None) of a specific message. Enforces flag exclusivity and calls `_auto_save()`.
+    - `get_stats()`: Returns session metrics, including total messages, character counts, models used, user messages, and assistant messages.
 
-### 3.3 Flagged Context Manager (`flagged_dalal_ai/core/context_manager.py`)
+### 3.3 Flagged Context Manager (`dalal_ai/core/flagged_context_manager.py`)
 Provides deterministic, user-controlled context filtering when switching models.
 
 - **`class FlaggedContextManager`**
-  - **Constructor:** Accepts a `max_tokens` parameter (default 4000) used exclusively when falling back to the ContextCompressor algorithm.
+  - **Constructor:** Accepts a `max_tokens` parameter (default 4000) used exclusively when falling back to the `ContextCompressor` algorithm.
   - **State Variables:**
     - `session_delivered: dict[str, set[int]]`: Maps a model name to a set of message indices that have already been injected into its tab. Prevents redundant context loops.
   - **Key Methods:**
     - `build_context(chat_history, target_model, selected_red_ids)`:
-      1. If `chat_history` has zero flags, it completely falls back to `ContextCompressor.build_context(..., max_tokens=self.max_tokens)`.
+      1. If `chat_history` has zero flags, it falls back to `ContextCompressor.build_context()`.
       2. If `target_model` is interacting for the first time: Gathers all `"green"` flagged messages, marks them delivered, and returns only those historical messages (in chronological order).
       3. If `target_model` is known: Discards any green messages (already delivered). Gathers messages with `"red"` flags whose indices are explicitly listed in `selected_red_ids` AND are not yet in the delivered set. Marks them delivered, and returns only those historical messages.
     - `reset_model(model_name)`: Removes the entry from `session_delivered`, allowing re-injection of green context next time.
-    - `clear_all()`: Resets `session_delivered` entirely.
 
-### 3.4 Context Compressor (`context_compressor.py`)
+### 3.4 Context Compressor (`dalal_ai/core/context_compressor.py`)
 The legacy algorithmic fallback for semantic token-budget compression, used if the user sets zero manual flags.
 
 - **`class ContextCompressor`**
   - **Key Methods:**
-    - `build_context(messages, query, max_tokens)`: 
+    - `build_context(messages, query)`: 
       - Always includes the `recent_count` latest messages.
       - Chunks the older history.
-      - Calculates **TextRank** using a TF-IDF matrix and cosine similarity to find structurally central conversation pieces.
+      - Calculates **TextRank** using a `TfidfVectorizer` (via `scikit-learn`) and cosine similarity (via `numpy`) to find structurally central conversation pieces.
       - Calculates **BM25** to rank chunks against the user's immediate `query`.
       - Combines scores `(alpha * TextRank) + ((1 - alpha) * BM25)` and greedily selects the top chunks that fit within `max_tokens`.
 
@@ -89,7 +91,7 @@ The bridge between the UI and the backend systems.
   - **Key Methods:**
     - `send_message(platform, user_message, flagged_mgr, selected_red_ids)`:
       - Determines if `platform == context.last_used_model`.
-      - **If False (Switch):** Calls `flagged_mgr.build_context()` to get ONLY historical messages, then generates a context string using `context.build_context_transcript(max_chars=12000)`. It then explicitly prepends this historical transcript to the fresh `user_message` to avoid duplicate query injections.
+      - **If False (Switch):** Calls `flagged_mgr.build_context()` to get historical messages, generates a context string using `context.build_context_transcript()`, and prepends this historical transcript to the fresh `user_message`.
       - Passes the payload to `browser_manager.send_organic_prompt()`.
       - Calls `browser_manager.extract_stable_response()`.
       - Catches exceptions (`BrowserActionRequired`, `ResponseCaptureTimeout`) and bubbles them to the UI for manual intervention.
@@ -99,18 +101,15 @@ The primary Streamlit frontend.
 
 - **Architecture:** 
   - Initializes state in `init_session_state`.
-  - Connects to the browser on load.
-  - Sidebar manages configuration, connection, and flag analytics. It displays Green/Red message and token counts (estimated at `len(words) * 1.3`), and shows a warning if Green tokens > 4000. It also shows a "Context Delivery Status" tracking which message indices have been sent to which model, with a button to reset context for specific models.
+  - Sidebar manages configuration, connection, and flag analytics. It displays Green/Red message and token counts. It also shows a "Context Delivery Status" tracking which message indices have been sent to which model.
   - The **Pending Switch Modal** intercepts dropdown model changes to prompt for Red flag selection before updating `active_model`. It lists undelivered red-flagged messages for the user to check before confirming the switch.
-  - Chat interface renders historical messages, embedding inline 🟩/🟥 flag toggle buttons via Streamlit columns. Clicking toggles the flag (exclusively) and reruns the UI.
-  - Renders LaTeX safely using standard Streamlit Markdown (because `_RESPONSE_TO_MARKDOWN_SCRIPT` safely escaped the math delimiters).
-  - Integrates a **Manual Paste Fallback** for when `BrowserActionRequired` or timeouts occur, allowing users to paste responses directly. These are logged with `flag=None`.
+  - Chat interface renders historical messages, embedding inline 🟩/🟥 flag toggle buttons via Streamlit columns.
+  - Integrates a **Manual Paste Fallback** for when `BrowserActionRequired` or timeouts occur, allowing users to paste responses directly.
   - Clears `selected_red_ids` after every successful send to prevent accidental re-use.
 
-### 3.7 Backward Compatibility & Type Hinting
-To maintain compatibility across **Python 3.8+** (including macOS environments using older Anaconda distributions) while adopting modern Python 3.10+ type syntax:
-- The codebase leverages `from __future__ import annotations` across core modules to defer evaluation of PEP 585/604 type hints (e.g., `list[dict[str, Any]]`) so they do not crash Python 3.8 at runtime.
-- For type aliases and global assignments evaluated directly at runtime (e.g., `StatusCallback`), the `typing` module's explicit types (like `Optional` and `Callable`) are used instead of the pipe operator (`|`).
+### 3.7 Python Compatibility & Type Hinting
+The codebase is designed for backward compatibility with **Python 3.8+** while adopting modern Python 3.10+ type syntax for robust static typing.
+- It leverages `from __future__ import annotations` across core modules to defer evaluation of PEP 585/604 type hints (e.g., `list[dict[str, Any]]`) so they do not crash Python 3.8 at runtime.
 
 ---
 
@@ -129,7 +128,7 @@ The single source of truth for execution parameters.
 | `timing.stability_wait_s` | `float` | The time gap to pause before re-sampling the response DOM. |
 | `timing.max_response_wait_s` | `integer` | Hard timeout (e.g., 180s). If exceeded, raises `ResponseCaptureTimeout`. |
 | `platforms.<name>.url` | `string` | The web UI target URL (e.g., `https://chatgpt.com/`). |
-| `platforms.<name>.input_selector` | `string` | Commma-separated list of CSS locators for the prompt box. |
+| `platforms.<name>.input_selector` | `string` | Comma-separated list of CSS locators for the prompt box. |
 | `platforms.<name>.stop_button` | `string` | CSS locator for the "Stop Generating" button. Used to detect generation state. |
 | `platforms.<name>.send_button` | `string` | CSS locator to submit the prompt. |
 | `platforms.<name>.response_selector` | `string` | CSS locator pointing to the parent node of an assistant message. |
@@ -146,14 +145,14 @@ Local storage for the conversation. Loaded entirely into memory by `ContextManag
       "content": "Can you write a python script?",
       "model": "chatgpt",
       "timestamp": "2024-05-15T14:30:00.000Z",
-      "flag": "green"  // Can be "green", "red", or null
+      "flag": "green"
     }
   ]
 }
 ```
 
 ### 4.3 Internal Inter-Process Interfaces
-- **UI ↔ Orchestrator Exceptions:**
+- **UI ↔ Orchestrator Exceptions (defined in `utils.exceptions`):**
   - `BrowserActionRequired`: Raised when a selector fails or an explicit block (like Cloudflare CAPTCHA) occurs. Contains a `detail` string. The UI catches this and renders a manual paste text area.
   - `ResponseCaptureTimeout`: Raised when `max_response_wait_s` is exceeded. Also triggers a manual paste flow in the UI.
 

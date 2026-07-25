@@ -3,7 +3,7 @@ Browser Manager — Playwright CDP client wrapper with organic DOM interaction.
 
 Connects to a real browser (Edge or Brave) via remote debugging, manages
 per-platform tabs, and provides human-like input simulation and stable
-response extraction.  Works on Windows and macOS.
+response extraction.  Works on Windows, macOS, and Linux.
 
 IMPORTANT: All Playwright operations run on a single dedicated thread
 to avoid greenlet/thread conflicts when called from Streamlit.
@@ -21,7 +21,12 @@ import threading
 import time
 import sys
 import atexit
+import urllib.request
+from pathlib import Path
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse
+
+from utils.exceptions import BrowserActionRequired
 
 # ── Fix Windows terminal encoding ─────────────────────────────────────────────
 if sys.platform == "win32":
@@ -30,96 +35,22 @@ if sys.platform == "win32":
         if hasattr(_s, "reconfigure"):
             _s.reconfigure(encoding="utf-8", errors="replace")
 
-# ── Fix Windows asyncio event loop policy ─────────────────────────────────────
-from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page, Playwright
+from playwright.sync_api import (
+    sync_playwright, Browser, BrowserContext, Page, Playwright, Locator,
+)
 
 StatusCallback = Optional[Callable[[str], None]]
 
 # Detect OS once
 IS_MAC = platform.system() == "Darwin"
 IS_WIN = platform.system() == "Windows"
+IS_LINUX = platform.system() == "Linux"
 META_KEY = "Meta" if IS_MAC else "Control"
 
 
-# Browser chat apps render Markdown into HTML before Playwright can read it.
-# This script recovers the useful semantic structure (including LaTex exposed
-# by KaTeX/MathJax) so Streamlit can render the response faithfully.
-_RESPONSE_TO_MARKDOWN_SCRIPT = r"""
-(node) => {
-  const root = node.matches('.markdown, .standard-markdown, .progressive-markdown')
-    ? node
-    : node.querySelector('.markdown, .standard-markdown, .progressive-markdown') || node;
-
-  const clean = (value) => (value || '').replace(/[\u200b\ufeff]/g, '');
-  const texFor = (element) => {
-    const annotation = element.querySelector('annotation[encoding="application/x-tex"]');
-    if (annotation?.textContent?.trim()) return annotation.textContent.trim();
-    return element.getAttribute('data-tex') || element.getAttribute('alttext') || '';
-  };
-  const isMath = (element) => element.matches(
-    '.katex, .katex-display, mjx-container, math, [data-tex], [alttext]'
-  );
-  const isBlockMath = (element) => element.matches(
-    '.katex-display, mjx-container[display="true"], mjx-container[display="block"], math[display="block"]'
-  );
-
-  function walk(current, orderedIndex = 0) {
-    if (current.nodeType === Node.TEXT_NODE) return clean(current.nodeValue);
-    if (current.nodeType !== Node.ELEMENT_NODE) return '';
-
-    const element = current;
-    const tag = element.tagName.toLowerCase();
-    if (['script', 'style', 'button', 'svg', 'path', 'nav'].includes(tag)) return '';
-
-    if (isMath(element)) {
-      const tex = texFor(element);
-      if (tex) return isBlockMath(element) ? `\n\n$$\n${tex}\n$$\n\n` : `$${tex}$`;
-    }
-
-    const children = [...element.childNodes]
-      .map((child) => walk(child, orderedIndex))
-      .join('');
-    const text = clean(children).trim();
-
-    if (/^h[1-6]$/.test(tag)) return `\n\n${'#'.repeat(Number(tag[1]))} ${text}\n\n`;
-    if (tag === 'p') return `\n\n${text}\n\n`;
-    if (tag === 'br') return '\n';
-    if (tag === 'hr') return '\n\n---\n\n';
-    if (tag === 'strong' || tag === 'b') return text ? `**${text}**` : '';
-    if (tag === 'em' || tag === 'i') return text ? `*${text}*` : '';
-    if (tag === 'blockquote') return text.split('\n').map((line) => `> ${line}`).join('\n') + '\n\n';
-    if (tag === 'code' && element.parentElement?.tagName.toLowerCase() !== 'pre') {
-      return text ? `\`${text}\`` : '';
-    }
-    if (tag === 'pre') return `\n\n\`\`\`\n${element.innerText.trim()}\n\`\`\`\n\n`;
-    if (tag === 'a') {
-      const href = element.getAttribute('href');
-      return href && text ? `[${text}](${href})` : text;
-    }
-    if (tag === 'li') return `- ${text}\n`;
-    if (tag === 'ol' || tag === 'ul') return `\n${children.replace(/\n{2,}/g, '\n')}\n`;
-    return children;
-  }
-
-  const markdown = walk(root)
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-
-  // When an app has already rendered elementary equations as ordinary text,
-  // recover inline LaTex for the common voltage/current/resistance forms.
-  return markdown.replace(
-    /(?<![A-Za-z$])([VIR](?:[ \t]*=[ \t]*(?:[VIR]|[0-9]+(?:\.[0-9]+)?|[ΩAV]|×|\/|\+|-|[ \t])+)+)(?![A-Za-z])/g,
-    (_, equation) => {
-      const tex = equation.replace(/[ \t=]+$/, '')
-        .replace(/Ω/g, '\\Omega')
-        .replace(/×/g, '\\times')
-        .replace(/([VIR0-9.]+)[ \t]*\/[ \t]*([VIR0-9.]+)/g, '\\frac{$1}{$2}');
-      return `$${tex.trim()}$`;
-    },
-  );
-}
-"""
+# ── Load the DOM-to-Markdown JavaScript once at import time ───────────────────
+_JS_PATH = Path(__file__).with_name("response_script.js")
+_RESPONSE_TO_MARKDOWN_SCRIPT = _JS_PATH.read_text(encoding="utf-8")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -134,17 +65,18 @@ _RESPONSE_TO_MARKDOWN_SCRIPT = r"""
 class _PlaywrightWorker:
     """Singleton background thread that executes all Playwright operations."""
 
-    _instance: Optional['_PlaywrightWorker'] = None
+    _instance: Optional[_PlaywrightWorker] = None
     _lock = threading.Lock()
 
     @classmethod
     def get(cls) -> _PlaywrightWorker:
+        """Return the singleton worker, creating it if needed."""
         with cls._lock:
             if cls._instance is None or not cls._instance._thread.is_alive():
                 cls._instance = cls()
         return cls._instance
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._queue: queue.Queue = queue.Queue()
         # A Sync Playwright instance owns a running event loop. It must be
         # started only once on this persistent thread, even if Streamlit
@@ -155,7 +87,7 @@ class _PlaywrightWorker:
         )
         self._thread.start()
 
-    def _loop(self):
+    def _loop(self) -> None:
         """Worker loop: pull callables from the queue and run them."""
         # Streamlit may install WindowsSelectorEventLoopPolicy. That policy
         # cannot create subprocess transports, but Playwright needs one to
@@ -179,12 +111,13 @@ class _PlaywrightWorker:
                 if not future.cancelled():
                     future.set_exception(exc)
 
-    def run(self, fn, *args, timeout=300, **kwargs):
+    def run(self, fn: Callable, *args: Any, timeout: int = 300, **kwargs: Any) -> Any:
         """
         Submit a callable to the Playwright thread and block until done.
+
         Returns the callable's return value or raises its exception.
         """
-        future = concurrent.futures.Future()
+        future: concurrent.futures.Future = concurrent.futures.Future()
         self._queue.put((fn, args, kwargs, future))
         return future.result(timeout=timeout)
 
@@ -216,9 +149,10 @@ class BrowserManager:
     (including Streamlit reruns).
     """
 
-    def __init__(self, config: dict[str, Any], on_status: StatusCallback = None):
+    def __init__(self, config: dict[str, Any], on_status: StatusCallback = None) -> None:
         self._config = config
-        self._browser_conf = config["browser"]
+        self._browser_conf: dict[str, Any] = config["browser"]
+        self._browser_name: str = self._browser_conf.get("use", "edge")
         self._cdp_url: str = self._browser_conf["remote_debugging_url"]
         self._platforms: dict[str, dict] = config["platforms"]
         self._timing: dict[str, Any] = config.get("timing", {})
@@ -239,6 +173,7 @@ class BrowserManager:
         self._worker = _PlaywrightWorker.get()
 
     def _status(self, message: str) -> None:
+        """Emit a progress message to the registered callback or stdout."""
         if self._on_status:
             self._on_status(message)
         else:
@@ -262,6 +197,7 @@ class BrowserManager:
         self.disconnect()
 
     def is_connected(self) -> bool:
+        """Check whether the browser connection is alive (thread-safe)."""
         try:
             return self._worker.run(self._is_connected_impl, timeout=10)
         except Exception:
@@ -285,8 +221,8 @@ class BrowserManager:
     # ── Browser Auto-Launch (runs on worker thread) ───────────────────────────
 
     def _find_browser_executable(self) -> Optional[str]:
-        browser_choice = self._browser_conf.get("use", "edge")
-        paths_conf = self._browser_conf.get("paths", {}).get(browser_choice, {})
+        """Locate the browser binary from config paths for the current OS."""
+        paths_conf = self._browser_conf.get("paths", {}).get(self._browser_name, {})
         os_key = "mac" if IS_MAC else "windows"
         candidates = paths_conf.get(os_key, [])
         for path in candidates:
@@ -295,7 +231,7 @@ class BrowserManager:
         return None
 
     def _is_debug_port_open(self) -> bool:
-        import urllib.request
+        """Check if the CDP debug port is already responding."""
         try:
             urllib.request.urlopen(self._cdp_url + "/json/version", timeout=2)
             return True
@@ -303,15 +239,14 @@ class BrowserManager:
             return False
 
     def _auto_launch_browser(self) -> bool:
+        """Launch the browser binary with remote debugging if not already running."""
         if self._is_debug_port_open():
-            browser_name = self._browser_conf.get("use", "edge")
-            self._status(f"✅ {browser_name.capitalize()} already running on debug port.")
+            self._status(f"✅ {self._browser_name.capitalize()} already running on debug port.")
             return True
 
         exe = self._find_browser_executable()
         if not exe:
-            browser_name = self._browser_conf.get("use", "edge")
-            self._status(f"⚠ Could not find {browser_name} executable.")
+            self._status(f"⚠ Could not find {self._browser_name} executable.")
             return False
 
         port = self._browser_conf.get("remote_debugging_port", 9222)
@@ -322,8 +257,7 @@ class BrowserManager:
         )
 
         cmd = [exe, f"--remote-debugging-port={port}", f"--user-data-dir={data_dir}"]
-        browser_name = self._browser_conf.get("use", "edge")
-        self._status(f"🚀 Launching {browser_name.capitalize()}...")
+        self._status(f"🚀 Launching {self._browser_name.capitalize()}...")
         self._status(f"   {exe}")
 
         try:
@@ -353,15 +287,15 @@ class BrowserManager:
     # ── Connection Implementation (runs on worker thread) ─────────────────────
 
     def _connect_impl(self) -> None:
+        """Connect to the browser over CDP, auto-launching if configured."""
         if self._browser is not None and self._browser.is_connected():
             return
 
         # Auto-launch if configured
         if self._browser_conf.get("auto_launch", False):
             if not self._auto_launch_browser():
-                browser_name = self._browser_conf.get("use", "edge")
                 raise ConnectionError(
-                    f"❌ Could not auto-launch {browser_name}.\n"
+                    f"❌ Could not auto-launch {self._browser_name}.\n"
                     f"   Please launch it manually or set 'auto_launch: false' in config.yaml."
                 )
 
@@ -371,9 +305,8 @@ class BrowserManager:
         except Exception as exc:
             self._browser = None
             self._pw = None
-            browser_name = self._browser_conf.get("use", "edge")
             raise ConnectionError(
-                f"❌ Could not connect to {browser_name} at {self._cdp_url}.\n"
+                f"❌ Could not connect to {self._browser_name} at {self._cdp_url}.\n"
                 f"   Make sure the browser is running with remote debugging enabled.\n"
                 f"   Error: {exc}"
             ) from exc
@@ -383,6 +316,7 @@ class BrowserManager:
         self._discover_platform_pages()
 
     def _disconnect_impl(self) -> None:
+        """Disconnect from the browser and clean up all state."""
         self._pages.clear()
         self._response_baselines.clear()
         if self._pw:
@@ -394,6 +328,7 @@ class BrowserManager:
     # ── Page Discovery (runs on worker thread) ────────────────────────────────
 
     def _discover_platform_pages(self) -> None:
+        """Match existing tabs to configured platforms, opening missing ones."""
         if not self._context:
             return
         for name, plat_conf in self._platforms.items():
@@ -417,12 +352,13 @@ class BrowserManager:
 
     @staticmethod
     def _urls_match(page_url: str, config_url: str) -> bool:
-        from urllib.parse import urlparse
+        """Check whether two URLs share the same domain (ignoring www.)."""
         page_domain = urlparse(page_url).netloc.replace("www.", "")
         config_domain = urlparse(config_url).netloc.replace("www.", "")
         return page_domain == config_domain
 
     def _get_page(self, platform: str) -> Page:
+        """Return the Playwright Page for a platform, rediscovering if needed."""
         if platform not in self._pages:
             self._discover_platform_pages()
         if platform not in self._pages:
@@ -435,6 +371,7 @@ class BrowserManager:
     # ── Organic Prompt Sending (runs on worker thread) ────────────────────────
 
     def _send_organic_prompt_impl(self, platform: str, text: str) -> None:
+        """Type (or paste) a prompt and click send on the given platform tab."""
         page = self._get_page(platform)
         plat = self._platforms[platform]
         typing_delay = self._timing.get("typing_delay_ms", 12)
@@ -452,8 +389,8 @@ class BrowserManager:
         # 2. Find and focus the input element
         input_el = self._find_element(page, plat["input_selector"], timeout=10000)
         fallback_used = False
-        fallback_btn = None
-        
+        fallback_btn: Optional[Locator] = None
+
         if input_el is None:
             self._status("⚠ Input selector failed. Attempting heuristic fallback...")
             fallback_input, fallback_btn = self._find_input_and_button_fallback(page)
@@ -462,8 +399,8 @@ class BrowserManager:
                 input_el = fallback_input
                 fallback_used = True
             else:
-                from utils.exceptions import BrowserActionRequired
                 raise BrowserActionRequired(
+                    platform,
                     f"❌ Cannot find input box for {platform}.\n"
                     f"   Selector: {plat['input_selector']}\n"
                     f"   The platform UI may have changed. Please check the page manually."
@@ -490,7 +427,7 @@ class BrowserManager:
         if send_btn is None:
             self._status("⚠ Send button selector failed. Attempting heuristic fallback...")
             _, send_btn = self._find_input_and_button_fallback(page)
-            
+
         if send_btn is None:
             self._status(f"⚠ Send button not found for {platform}, trying Enter key...")
             page.keyboard.press("Enter")
@@ -503,7 +440,8 @@ class BrowserManager:
         post_delay = self._timing.get("post_send_delay_s", 1.0)
         time.sleep(post_delay)
 
-    def _clear_input(self, page: Page, element) -> None:
+    def _clear_input(self, page: Page, element: Locator) -> None:
+        """Select all text in the input element and delete it."""
         try:
             element.click()
             page.keyboard.press(f"{META_KEY}+A")
@@ -512,7 +450,8 @@ class BrowserManager:
         except Exception:
             pass
 
-    def _paste_text(self, page: Page, element, text: str) -> None:
+    def _paste_text(self, page: Page, element: Locator, text: str) -> None:
+        """Paste text via clipboard; fall back to JS injection or slow typing."""
         try:
             import pyperclip
             pyperclip.copy(text)
@@ -533,6 +472,7 @@ class BrowserManager:
     # ── Response Extraction (runs on worker thread) ───────────────────────────
 
     def _extract_stable_response_impl(self, platform: str) -> str:
+        """Poll the DOM until the model's response text stabilises."""
         page = self._get_page(platform)
         plat = self._platforms[platform]
         stability_wait = self._timing.get("stability_wait_s", 2.0)
@@ -599,10 +539,11 @@ class BrowserManager:
             self._response_baselines.pop(platform, None)
 
     def _get_last_response_text(self, page: Page, selector: str) -> Optional[str]:
+        """Return the Markdown text of the latest response element, or None."""
         return self._get_response_snapshot(page, selector)[1] or None
 
     def _get_response_snapshot(self, page: Page, selector: str) -> tuple[int, str]:
-        """Return the number of response nodes and latest Markdown response."""
+        """Return (count_of_response_nodes, latest_markdown_text)."""
         try:
             elements = page.query_selector_all(selector)
             if elements:
@@ -629,7 +570,8 @@ class BrowserManager:
 
     # ── Utility (runs on worker thread) ───────────────────────────────────────
 
-    def _find_element(self, page: Page, selector: str, timeout: int = 5000):
+    def _find_element(self, page: Page, selector: str, timeout: int = 5000) -> Optional[Locator]:
+        """Try each comma-separated CSS selector until one is visible."""
         selectors = [s.strip() for s in selector.split(",")]
         for sel in selectors:
             try:
@@ -641,12 +583,14 @@ class BrowserManager:
         return None
 
     def _is_connected_impl(self) -> bool:
+        """Check if the Playwright browser object is connected."""
         return self._browser is not None and self._browser.is_connected()
 
     def _list_open_tabs_impl(self) -> list[dict]:
+        """Return a list of dicts with 'title' and 'url' for each open tab."""
         if not self._context:
             return []
-        tabs = []
+        tabs: list[dict] = []
         for page in self._context.pages:
             try:
                 tabs.append({"title": page.title(), "url": page.url})
@@ -654,9 +598,9 @@ class BrowserManager:
                 pass
         return tabs
 
-    def _find_input_and_button_fallback(self, page: Page):
-        """Heuristic fallback to find the largest contenteditable input and send button."""
-        input_el = None
+    def _find_input_and_button_fallback(self, page: Page) -> tuple[Optional[Locator], Optional[Locator]]:
+        """Heuristic fallback: find the largest contenteditable input and send button."""
+        input_el: Optional[Locator] = None
         try:
             inputs = page.locator('[contenteditable="true"]').all()
             max_area = -1
@@ -671,12 +615,12 @@ class BrowserManager:
         except Exception:
             pass
 
-        send_btn = None
+        send_btn: Optional[Locator] = None
         try:
             buttons = page.locator('button[aria-label*="Send" i]').all()
             if not buttons:
                 buttons = page.locator('button:has-text("Send"), button:has-text("Submit")').all()
-            
+
             max_area = -1
             for el in buttons:
                 if el.is_visible():
@@ -691,9 +635,10 @@ class BrowserManager:
 
         return input_el, send_btn
 
+
 # Register atexit handler to ensure the playwright worker is stopped gracefully
 @atexit.register
-def _cleanup_playwright_worker():
+def _cleanup_playwright_worker() -> None:
     worker = _PlaywrightWorker._instance
     if worker is not None:
         worker.stop_playwright()
