@@ -34,7 +34,7 @@ timing:
   typing_delay_ms: 12          # milliseconds between keystrokes for organic feel
   stability_wait_s: 2.0        # seconds to confirm response text stopped growing
   stability_samples: 3         # consecutive stable samples needed
-  max_response_wait_s: 180     # hard timeout waiting for response (3 min)
+  max_response_wait_s: 360     # hard timeout waiting for response (6 min)
   post_send_delay_s: 1.0       # pause after clicking send before polling
   network_idle_timeout_s: 2.0  # wait for network to idle after generation
 
