@@ -5,6 +5,8 @@ Provides context filtering based on explicit user flags (green/red) to precisely
 control what context is shared with each AI model.
 """
 
+from __future__ import annotations
+
 from typing import Any, Optional
 
 from dalal_ai.core.context_compressor import ContextCompressor

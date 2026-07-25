@@ -34,7 +34,7 @@ When you **switch models**, it intelligently injects history using a **Flagged C
 
 ## Prerequisites
 
-- **Python 3.11+** installed
+- **Python 3.8+** installed (3.10+ recommended)
 - **Microsoft Edge** or **Brave** browser installed
   - ⚠️ Firefox is NOT supported (different debugging protocol)
 - Free accounts on the platforms you want to use:
@@ -261,6 +261,20 @@ AiOrchestor/
 ├── DETAILED_DESIGN.md   # Design document
 └── GUIDE.md             # This file
 ```
+
+---
+
+## Building a Standalone Executable
+
+You can compile Dalal AI into a standalone application that does not require Python to be installed. The build script automatically detects your operating system and creates the appropriate release package.
+
+```bash
+python build.py
+```
+
+- **Windows:** Creates a `.exe` Installer using Inno Setup (if installed) or falls back to a Zip archive in the `release/` folder.
+- **macOS:** Creates a standalone Mac binary packaged into a `.zip` archive in the `release/` folder.
+- **Linux:** Creates a standalone ELF binary packaged into a `.tar.gz` archive in the `release/` folder.
 
 ---
 

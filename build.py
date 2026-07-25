@@ -25,13 +25,13 @@ def prepare_release_files():
     # Write a simple README.txt and LICENSE for the release folder if they don't exist
     if not os.path.exists("README.txt"):
         with open("README.txt", "w") as f:
-            f.write("Dalal AI\n========\n\nRun DalalAI_Setup.exe to install.\n")
+            f.write("Dalal AI\n========\n\nWindows: Run the Installer or extract the Zip to run.\nmacOS/Linux: Extract the archive and run the executable.\n")
     if not os.path.exists("LICENSE"):
         with open("LICENSE", "w") as f:
             f.write("MIT License (or equivalent). See source for details.\n")
     if not os.path.exists("CHANGELOG"):
         with open("CHANGELOG", "w") as f:
-            f.write("Version 1.0.0\n- Initial professional release\n")
+            f.write("Version 1.0.1\n- Added macOS and Linux build support.\n- Backward compatibility fixes for Python 3.8.\n\nVersion 1.0.0\n- Initial professional release\n")
             
     shutil.copy2("README.txt", "release/")
     shutil.copy2("LICENSE", "release/")

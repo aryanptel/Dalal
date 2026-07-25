@@ -107,6 +107,11 @@ The primary Streamlit frontend.
   - Integrates a **Manual Paste Fallback** for when `BrowserActionRequired` or timeouts occur, allowing users to paste responses directly. These are logged with `flag=None`.
   - Clears `selected_red_ids` after every successful send to prevent accidental re-use.
 
+### 3.7 Backward Compatibility & Type Hinting
+To maintain compatibility across **Python 3.8+** (including macOS environments using older Anaconda distributions) while adopting modern Python 3.10+ type syntax:
+- The codebase leverages `from __future__ import annotations` across core modules to defer evaluation of PEP 585/604 type hints (e.g., `list[dict[str, Any]]`) so they do not crash Python 3.8 at runtime.
+- For type aliases and global assignments evaluated directly at runtime (e.g., `StatusCallback`), the `typing` module's explicit types (like `Optional` and `Callable`) are used instead of the pipe operator (`|`).
+
 ---
 
 ## 4. Interface Control Document (ICD)
@@ -175,3 +180,14 @@ Local storage for the conversation. Loaded entirely into memory by `ContextManag
 3. The Streamlit thread blocks on `.result(timeout)`.
 4. The background `_PlaywrightWorker` thread pops the function, executes the Playwright DOM logic on its dedicated asyncio event loop, and sets the future result.
 5. The Streamlit thread resumes and returns the Markdown string.
+
+---
+
+## 6. Build and Packaging Process
+
+The tool can be compiled into a standalone, portable application using PyInstaller, orchestrated by `build.py`.
+
+- **Cross-Platform Compilation:** `DalalAI.spec` defines the application bundle. It disables the console window (on Windows/macOS) and explicitly bundles `config.yaml`, the `dalal_ai` source folder, and Streamlit's metadata. 
+- **macOS / Linux:** When `build.py` runs on these systems, it invokes PyInstaller to create a native `.app` bundle or ELF binary in `dist/DalalAI`. It then uses `shutil.make_archive` to package this directory into a `.zip` (macOS) or `.tar.gz` (Linux) in the `release/` directory.
+- **Windows:** The script first attempts to invoke Inno Setup (`ISCC.exe`) via `installer/setup.iss` to create a professional `DalalAI_Setup.exe` installer. If Inno Setup is missing or fails, it gracefully falls back to generating a `.zip` archive.
+- **Artifacts:** A generated `README.txt`, `CHANGELOG`, and `LICENSE` are automatically copied alongside the final archives in the `release/` directory.

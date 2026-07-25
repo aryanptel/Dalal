@@ -1,4 +1,5 @@
 Dalal AI
 ========
 
-Run DalalAI_Setup.exe to install.
+Windows: Run the Installer or extract the Zip to run.
+macOS/Linux: Extract the archive and run the executable.
