@@ -51,6 +51,20 @@
     }
     if (tag === 'li') return `- ${text}\n`;
     if (tag === 'ol' || tag === 'ul') return `\n${children.replace(/\n{2,}/g, '\n')}\n`;
+    if (tag === 'table') return `\n\n${children}\n\n`;
+    if (tag === 'thead' || tag === 'tbody') return children;
+    if (tag === 'tr') {
+      let isHeader = element.parentElement?.tagName?.toLowerCase() === 'thead' || 
+                     [...element.children].some(c => c.tagName.toLowerCase() === 'th');
+      if (!isHeader && !element.previousElementSibling) {
+          const pTag = element.parentElement?.tagName?.toLowerCase();
+          if (pTag === 'table' || (pTag === 'tbody' && !element.parentElement.previousElementSibling)) isHeader = true;
+      }
+      let row = `|${children}\n`;
+      if (isHeader) row += `|${[...element.children].map(() => ' --- |').join('')}\n`;
+      return row;
+    }
+    if (tag === 'th' || tag === 'td') return ` ${children.replace(/\n+/g, ' ').trim()} |`;
     return children;
   }
 

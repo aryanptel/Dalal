@@ -66,7 +66,7 @@ platforms:
     # Gemini uses a rich-textarea custom element with contenteditable inside
     input_selector: "rich-textarea div[contenteditable='true'], div[contenteditable='true'][aria-label*='prompt'], .ql-editor, div[contenteditable='true']"
     stop_button: "button[aria-label='Stop'], button.stop-button, button:has-text('Stop')"
-    send_button: "button.send-button, button[aria-label='Send message'], button[aria-label='Send'], button[mat-icon-button]"
+    send_button: "button.send-button, button[aria-label='Send message'], button[aria-label='Send']"
     response_selector: "model-response, message-content, .response-container, .model-response-text"
     new_chat_button: "button[aria-label='New chat'], a[href='/app']"
 
@@ -75,6 +75,30 @@ platforms:
     # DeepSeek uses a textarea or contenteditable
     input_selector: "textarea#chat-input, textarea[placeholder*='Message'], textarea[placeholder*='message'], div[contenteditable='true'], textarea"
     stop_button: "button:has-text('Stop'), div[class*='stop'], button[aria-label='Stop']"
-    send_button: "div[class*='send'] button, button[aria-label='Send'], button:has(svg[viewBox]), div[role='button'][class*='send']"
+    send_button: "div[aria-label='Send message'], div[role='button'][aria-label='Send'], div[class*='send'] button, button[aria-label='Send'], div[role='button'][class*='send']"
     response_selector: ".markdown-body, div[class*='message-content'], div[class*='assistant'], div[class*='markdown']"
     new_chat_button: "a[href='/'], button:has-text('New chat'), div[class*='new-chat']"
+
+  kimi:
+    url: "https://kimi.moonshot.cn/"
+    input_selector: "div[contenteditable='true'], textarea"
+    stop_button: "button[aria-label*='stop'], button:has-text('Stop')"
+    send_button: "div[role='button'][aria-label*='send'], button[aria-label*='send'], div[class*='send'] button"
+    response_selector: "div[class*='markdown'], div.message-content"
+    new_chat_button: "div:has-text('New Chat'), button[aria-label='New Chat'], a[href='/']"
+
+  huggingchat:
+    url: "https://huggingface.co/chat/"
+    input_selector: "textarea[placeholder*='Ask anything'], textarea"
+    stop_button: "button:has-text('Stop generating')"
+    send_button: "button[type='submit'], button[aria-label*='Send']"
+    response_selector: "div.prose"
+    new_chat_button: "form[action='/chat/'] button, a[href='/chat/']"
+
+  metaai:
+    url: "https://www.meta.ai/"
+    input_selector: "textarea[placeholder*='Ask Meta AI'], div[contenteditable='true'], textarea"
+    stop_button: "button[aria-label*='Stop'], button:has-text('Stop')"
+    send_button: "button[aria-label*='Send'], div[role='button'][aria-label*='Send']"
+    response_selector: "div[role='article'], div.markdown"
+    new_chat_button: "a[href='/'], button[aria-label*='New chat']"

@@ -6,7 +6,7 @@ This document is an exhaustive, self-contained reference guide for Dalal AI. It 
 
 ## 1. System Overview & Purpose
 
-**Purpose:** Dalal AI bridges a unified user interface (Web/CLI) with live web sessions of popular AI models (ChatGPT, Claude, Gemini, DeepSeek). It allows users to chat with multiple AIs from one screen while intelligently injecting conversation history when switching models, thus bypassing the need for paid API keys by automating the free-tier web DOMs via the Chrome DevTools Protocol (CDP).
+**Purpose:** Dalal AI bridges a unified user interface (Web/CLI) with live web sessions of popular AI models (ChatGPT, Claude, Gemini, DeepSeek, Kimi, HuggingChat, Meta AI). It allows users to chat with multiple AIs from one screen while intelligently injecting conversation history when switching models, thus bypassing the need for paid API keys by automating the free-tier web DOMs via the Chrome DevTools Protocol (CDP).
 
 **High-Level Data Flow:**
 1. **Input:** User submits a message via Streamlit (`app.py`) or CLI (`main.py`).

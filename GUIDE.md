@@ -1,6 +1,6 @@
 # 🧠 Dalal AI — User & Setup Guide
 
-A tool that connects to your browser and lets you chat with **ChatGPT**, **Claude**, **Gemini**, and **DeepSeek** from a single interface — preserving full conversation context when you switch between models.
+A tool that connects to your browser and lets you chat with **ChatGPT**, **Claude**, **Gemini**, **DeepSeek**, **Kimi**, **HuggingChat**, and **Meta AI** from a single interface — preserving full conversation context when you switch between models.
 
 **Two ways to use it:**
 - **Web UI (recommended)** — `python -m dalal_ai` — rich Markdown, LaTeX equations, code blocks, deterministic flagging.
@@ -19,7 +19,8 @@ A tool that connects to your browser and lets you chat with **ChatGPT**, **Claud
 │  (dalal_ai)       │ ◀────── │  ┌─ ChatGPT tab                 │
 │  or Terminal CLI  │         │  ├─ Claude tab                   │
 │                   │         │  ├─ Gemini tab                  │
-│  Pick model,      │         │  ├─ DeepSeek tab                │
+│                   │         │  ├─ DeepSeek tab                │
+│  Pick model,      │         │  ├─ Kimi, HuggingChat, Meta AI  │
 │  type message…    │         │  └─ (auto-opened if missing)    │
 └───────────────────┘         └──────────────────────────────────┘
 ```

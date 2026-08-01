@@ -3,7 +3,7 @@ AI Web Chat Orchestrator — Main Interface
 ==========================================
 
 A CLI tool that connects to a live Chrome browser via remote debugging
-and lets you chat with ChatGPT, Claude, Gemini, and DeepSeek from a single
+and lets you chat with ChatGPT, Claude, Gemini, DeepSeek, Kimi, HuggingChat, and Meta AI from a single
 terminal, preserving conversation context across model switches.
 
 Setup
@@ -11,7 +11,7 @@ Setup
 1. Launch Chrome with remote debugging:
    chrome.exe --remote-debugging-port=9222 --user-data-dir="C:\\selenium\\AutomationProfile"
 
-2. Log into ChatGPT, Claude, Gemini, and DeepSeek in the browser tabs.
+2. Log into ChatGPT, Claude, Gemini, DeepSeek, Kimi, HuggingChat, and Meta AI in the browser tabs.
 
 3. Run this script:
    python main.py
@@ -56,8 +56,8 @@ BANNER = f"""
 {Fore.CYAN}╔══════════════════════════════════════════════════════════════╗
 ║                                                              ║
 ║   {Fore.WHITE}🧠  AI Web Chat Orchestrator{Fore.CYAN}                               ║
-║   {Fore.WHITE}   Route prompts across ChatGPT, Claude,{Fore.CYAN}                 ║
-║   {Fore.WHITE}   Gemini & DeepSeek from one terminal.{Fore.CYAN}                   ║
+║   {Fore.WHITE}   Route prompts across ChatGPT, Claude, Gemini,{Fore.CYAN}         ║
+║   {Fore.WHITE}   DeepSeek, Kimi, HuggingChat & Meta AI.{Fore.CYAN}                ║
 ║                                                              ║
 ╚══════════════════════════════════════════════════════════════╝{Style.RESET_ALL}
 """
@@ -68,6 +68,9 @@ HELP_TEXT = f"""
   {Fore.GREEN}/claude{Style.RESET_ALL}     Switch active model to Claude
   {Fore.GREEN}/gemini{Style.RESET_ALL}     Switch active model to Gemini
   {Fore.GREEN}/deepseek{Style.RESET_ALL}   Switch active model to DeepSeek
+  {Fore.GREEN}/kimi{Style.RESET_ALL}       Switch active model to Kimi
+  {Fore.GREEN}/huggingchat{Style.RESET_ALL} Switch active model to HuggingChat
+  {Fore.GREEN}/metaai{Style.RESET_ALL}     Switch active model to Meta AI
   {Fore.GREEN}/status{Style.RESET_ALL}     Show session statistics
   {Fore.GREEN}/tabs{Style.RESET_ALL}       List open browser tabs
   {Fore.GREEN}/history{Style.RESET_ALL}    Show recent conversation history
@@ -83,6 +86,9 @@ PLATFORM_COLORS = {
     "claude": Fore.YELLOW,
     "gemini": Fore.BLUE,
     "deepseek": Fore.MAGENTA,
+    "kimi": Fore.LIGHTBLACK_EX,
+    "huggingchat": Fore.LIGHTYELLOW_EX,
+    "metaai": Fore.LIGHTBLUE_EX,
 }
 
 PLATFORM_ICONS = {
@@ -90,6 +96,9 @@ PLATFORM_ICONS = {
     "claude":   "🟠",
     "gemini":   "🔵",
     "deepseek": "🟣",
+    "kimi":     "🌙",
+    "huggingchat": "🤗",
+    "metaai":   "♾️",
 }
 
 
@@ -234,7 +243,7 @@ def main() -> None:
                 print(HELP_TEXT)
                 continue
 
-            elif cmd in ("/chatgpt", "/claude", "/gemini", "/deepseek"):
+            elif cmd in ("/chatgpt", "/claude", "/gemini", "/deepseek", "/kimi", "/huggingchat", "/metaai"):
                 new_model = cmd.lstrip("/")
                 if new_model in platforms:
                     active_model = new_model

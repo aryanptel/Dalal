@@ -70,7 +70,7 @@ class Orchestrator:
         Parameters
         ----------
         platform : str
-            Target platform name: "chatgpt", "claude", "gemini", or "deepseek".
+            Target platform name: "chatgpt", "claude", "gemini", "deepseek", "kimi", "huggingchat", or "metaai".
         user_message : str
             The user's raw message text.
         flagged_mgr : FlaggedContextManager, optional

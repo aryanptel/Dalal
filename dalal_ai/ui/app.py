@@ -32,6 +32,9 @@ PLATFORM_LABELS = {
     "claude": "Claude",
     "gemini": "Gemini",
     "deepseek": "DeepSeek",
+    "kimi": "Kimi",
+    "huggingchat": "HuggingChat",
+    "metaai": "Meta AI",
 }
 
 PLATFORM_EMOJI = {
@@ -39,6 +42,9 @@ PLATFORM_EMOJI = {
     "claude": "🟠",
     "gemini": "🔵",
     "deepseek": "🟣",
+    "kimi": "🌙",
+    "huggingchat": "🤗",
+    "metaai": "♾️",
 }
 
 PLATFORM_COLORS = {
@@ -46,6 +52,9 @@ PLATFORM_COLORS = {
     "claude": "#d4a274",
     "gemini": "#4285f4",
     "deepseek": "#7c3aed",
+    "kimi": "#0a0a0a",
+    "huggingchat": "#ffcf4d",
+    "metaai": "#0064e0",
 }
 
 
