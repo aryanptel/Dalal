@@ -6,9 +6,9 @@ It uses advanced Playwright-based browser automation over the Chrome DevTools Pr
 
 ## Features
 
-- **Swarm Mode (Parallel JSON Engine):** Assign a Moderator AI to break down complex tasks and delegate them concurrently to Worker AI tabs in parallel, synthesizing a final response.
+- **Swarm Mode (Parallel JSON Engine):** Assign a Moderator AI to break down complex tasks and delegate them concurrently to a fully configurable pool of Worker AI tabs. Green-flagged context is automatically shared with all workers, allowing them to synthesize a highly informed final response.
 - **Unified Interface:** Chat with several leading AI models from one screen without needing paid API keys.
-- **Smart Context Switching:** Switch models mid-chat. Dalal AI automatically injects your past conversation using deterministic red/green flags or a TF-IDF/TextRank mathematical fallback.
+- **Smart Context Switching:** Switch models mid-chat. Dalal AI automatically injects your past conversation using deterministic red/green flags or a mathematical fallback. Historical context is always sent intact without artificial trimming.
 - **Thread-Safe Automation:** A robust singleton background worker handles Playwright browser automation, making it completely stable within Streamlit environments.
 - **Cross-Platform:** Runs natively on Windows, macOS, and Linux. Built-in compilation scripts generate standalone installers and archives.
 - **Organic Interactions:** Simulates human typing, handles JavaScript edge cases (like React event firing), and safely recovers Markdown, Tables, and LaTeX directly from the DOM using custom JavaScript extractors.

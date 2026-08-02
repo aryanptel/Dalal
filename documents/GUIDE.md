@@ -146,9 +146,11 @@ The tool auto-detects the executable path on Windows and macOS. If your browser 
 Dalal AI v2 features a **Swarm Mode** that allows you to orchestrate multiple AIs at once to solve complex problems.
 
 1. Toggle **"🐝 Enable Swarm Mode"** in the sidebar.
-2. Select your **Moderator AI** (e.g., ChatGPT).
-3. Type a complex prompt. The Moderator AI will automatically create a structured JSON plan, break the task into pieces, and delegate it to other tabs (like Claude and Gemini).
-4. The system extracts responses from all delegated workers **in parallel** (saving massive amounts of time), wraps them in XML, and feeds them back to the Moderator to synthesize a final answer.
+2. Select your **Moderator AI** (e.g., DeepSeek) and choose how many **Worker AIs** you want (e.g., 3 DeepSeek workers). You can mix and match models as needed.
+3. Use the **"Pre-launch Swarm Tabs"** button to automatically open the required tabs in the background before you start, improving execution speed.
+4. If you have code or text that all agents need to see, mark it with a **🟩 Green Flag**. The Moderator and all Workers will automatically receive this context.
+5. Type a complex prompt. The Moderator AI will automatically create a structured JSON plan, break the task into pieces, and delegate it to the Worker tabs.
+6. The system extracts responses from all delegated workers **in parallel** (saving massive amounts of time), wraps them in XML, and feeds them back to the Moderator to synthesize a final answer.
 
 ### LaTeX Examples
 

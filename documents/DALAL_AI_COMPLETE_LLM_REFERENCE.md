@@ -48,7 +48,7 @@ This document is an exhaustive, self-contained reference guide for Dalal AI. It 
   - *Public Methods:*
     - `add_message(role: str, content: str, model: str, flag: Optional[str] = None)`: Appends to `messages`, updates `last_used_model`, and calls `_auto_save()`.
     - `update_flag(index: int, new_flag: Optional[str])`: Mutates `messages[index]["flag"]` and calls `_auto_save()`.
-    - `build_context_transcript(max_chars: int, messages: list[dict]) -> str`: Returns a continuous Markdown string. If the combined length exceeds `max_chars`, it drops older messages (FIFO) until it fits.
+    - `build_context_transcript(max_chars: int, messages: list[dict]) -> str`: Returns a continuous Markdown string of historical messages. Artificial truncation logic was intentionally removed; it always returns the full transcript bypassing `max_chars` to preserve maximum context integrity for complex mathematical or code sessions.
     - `clear()`: Empties `messages` and saves.
 
 ### 2.4 `dalal_ai/core/flagged_context_manager.py`
@@ -80,10 +80,11 @@ This document is an exhaustive, self-contained reference guide for Dalal AI. It 
 ### 2.7 `dalal_ai/core/swarm_orchestrator.py`
 **Responsibility:** Multi-agent parallel coordination.
 - **`class SwarmOrchestrator`:**
-  - *Methods:* `execute_swarm_task(prompt, moderator, max_rounds=3)`:
-    - A generator implementing a 4-Phase loop.
-    - Yields `{"type": "status", "message": "..."}` or `{"type": "complete", "answer": "..."}`.
-    - Parses JSON plans from the moderator via regex fallbacks.
+  - *Methods:* `execute_swarm_task(prompt, moderator, workers, flagged_mgr, selected_red_ids, max_rounds=3)`:
+    - A generator implementing a 4-Phase loop. Yields `{"type": "status"}` and `{"type": "complete"}` dicts for Streamlit rendering.
+    - Explicitly reserves the `0` index for the moderator tab (e.g., `deepseek:0`) and maps worker arrays to `platform:1`, `platform:2`, etc. to prevent tab collisions.
+    - Uses `flagged_mgr` to compile a full transcript of 🟩 green-flagged messages and prepends this to the System Prompts of BOTH the Moderator and the Workers.
+    - Parses JSON plans from the moderator via regex fallbacks. Employs `codecs.decode(..., 'unicode_escape')` during fallback to gracefully parse corrupted JSON blocks containing unescaped newline literals.
     - Uses `BrowserManager.send_prompts_batch()` and `BrowserManager.extract_responses_batch()` to execute tasks concurrently on worker tabs.
     - Aggregates results in XML tags (`<worker name="..." role="...">...</worker>`) to inject back into the moderator.
 
