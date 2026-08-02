@@ -21,6 +21,7 @@ from dalal_ai.browser.browser_manager import BrowserManager
 from dalal_ai.core.context_manager import ContextManager
 from dalal_ai.core.flagged_context_manager import FlaggedContextManager
 from dalal_ai.core.orchestrator import Orchestrator
+from dalal_ai.core.swarm_orchestrator import SwarmOrchestrator
 from utils.exceptions import BrowserActionRequired, ResponseCaptureTimeout
 from utils.paths import get_config_path, get_history_path, init_user_data, get_user_data_dir
 from utils.logger import logger
@@ -84,6 +85,9 @@ def init_session_state(config: dict[str, Any]) -> None:
     st.session_state.status_log = []
     st.session_state.pending_manual = None
     st.session_state.last_send_error = ""
+    st.session_state.swarm_orchestrator = None
+    st.session_state.swarm_mode = False
+    st.session_state.swarm_moderator = "chatgpt"
     st.session_state.initialized = True
 
 
@@ -108,6 +112,10 @@ def connect_browser() -> None:
             st.session_state.context,
             config,
             on_status=on_status,
+        )
+        st.session_state.swarm_orchestrator = SwarmOrchestrator(
+            browser,
+            st.session_state.context,
         )
         st.session_state.connected = True
         st.session_state.connection_error = ""
@@ -186,7 +194,7 @@ st.markdown(
         font-family: 'Inter', sans-serif !important;
     }
 
-    #MainMenu, footer, header { visibility: hidden; }
+    #MainMenu, footer { visibility: hidden; }
 
     section[data-testid="stSidebar"] {
         background: #111827 !important;
@@ -330,6 +338,47 @@ with st.sidebar:
             st.rerun()
     else:
         st.markdown(render_model_badge(st.session_state.active_model), unsafe_allow_html=True)
+
+    st.divider()
+    st.session_state.swarm_mode = st.sidebar.toggle("🐝 Enable Swarm Mode", st.session_state.swarm_mode)
+    if st.session_state.swarm_mode:
+        st.session_state.swarm_moderator = st.sidebar.selectbox(
+            "Moderator AI",
+            st.session_state.platforms,
+            index=st.session_state.platforms.index(st.session_state.swarm_moderator) if st.session_state.swarm_moderator in st.session_state.platforms else 0,
+            format_func=lambda p: platform_labels[p],
+        )
+        
+        st.sidebar.markdown("**Swarm Workers**")
+        worker_count = st.sidebar.number_input("Number of Workers", min_value=1, max_value=10, value=len(st.session_state.platforms))
+        workers = []
+        for i in range(worker_count):
+            # Default to spreading across platforms if possible, otherwise first platform
+            default_idx = i % len(st.session_state.platforms)
+            w = st.sidebar.selectbox(
+                f"Worker {i+1}", 
+                st.session_state.platforms, 
+                index=default_idx,
+                key=f"swarm_worker_{i}", 
+                format_func=lambda p: platform_labels[p]
+            )
+            workers.append(w)
+        st.session_state.swarm_workers = workers
+        
+        if st.sidebar.button("Pre-launch Swarm Tabs"):
+            with st.spinner("Pre-launching tabs in browser..."):
+                counts = {}
+                # Include moderator in tab count so it gets a tab too
+                counts[st.session_state.swarm_moderator] = 1
+                for w in st.session_state.swarm_workers:
+                    counts[w] = counts.get(w, 0) + 1
+                    
+                for platform, count in counts.items():
+                    try:
+                        st.session_state.orchestrator.browser.prelaunch_tabs(platform, count)
+                    except Exception as exc:
+                        st.sidebar.error(f"Failed to launch {platform}: {exc}")
+                st.sidebar.success("Swarm tabs ready!")
 
     st.divider()
 
@@ -485,59 +534,84 @@ else:
         with st.chat_message("user", avatar="👤"):
             st.markdown(user_input)
 
-        with st.chat_message("assistant", avatar="🤖"):
-            platform = st.session_state.active_model
-            st.markdown(render_model_badge(platform), unsafe_allow_html=True)
+        if st.session_state.swarm_mode:
+            with st.chat_message("assistant", avatar="🐝"):
+                st.markdown(f"**Swarm Mode:** {render_model_badge(st.session_state.swarm_moderator)} is moderating.", unsafe_allow_html=True)
+                success = False
+                try:
+                    with st.status("Swarm active... Delegating to workers.", expanded=True) as status:
+                        for update in st.session_state.swarm_orchestrator.execute_swarm_task(
+                            user_input, 
+                            st.session_state.swarm_moderator,
+                            workers=st.session_state.swarm_workers,
+                            flagged_mgr=st.session_state.flagged_mgr,
+                            selected_red_ids=st.session_state.selected_red_ids
+                        ):
+                            if update["type"] == "status":
+                                status.update(label=update["message"])
+                                st.write(update["message"])
+                            elif update["type"] == "complete":
+                                status.update(label="Swarm Task Complete!", state="complete")
+                                final_answer = update["answer"]
+                    st.markdown(final_answer)
+                    st.session_state.selected_red_ids = []
+                    success = True
+                except Exception as exc:
+                    st.error(f"Swarm execution failed: {exc}")
+        else:
+            with st.chat_message("assistant", avatar="🤖"):
+                platform = st.session_state.active_model
+                st.markdown(render_model_badge(platform), unsafe_allow_html=True)
 
-            success = False
-            try:
-                with st.spinner(f"Sending to {PLATFORM_LABELS.get(platform, platform)}… (watch the browser tab)"):
-                    response = st.session_state.orchestrator.send_message(
-                        platform,
-                        user_input,
-                        flagged_mgr=st.session_state.flagged_mgr,
-                        selected_red_ids=st.session_state.selected_red_ids
+                success = False
+                try:
+                    with st.spinner(f"Sending to {PLATFORM_LABELS.get(platform, platform)}… (watch the browser tab)"):
+                        response = st.session_state.orchestrator.send_message(
+                            platform,
+                            user_input,
+                            flagged_mgr=st.session_state.flagged_mgr,
+                            selected_red_ids=st.session_state.selected_red_ids
+                        )
+                    st.markdown(response)
+                    # Clear red flags after successful send
+                    st.session_state.selected_red_ids = []
+                    success = True
+
+                except BrowserActionRequired as exc:
+                    st.session_state.pending_manual = {
+                        "platform": platform,
+                        "user_message": user_input,
+                        "user_already_sent": False,
+                        "message": (
+                            f"**Browser action needed** — {exc.detail}\n\n"
+                            "Complete the step in the browser tab, then paste the response below."
+                        ),
+                    }
+                    st.warning(str(exc))
+
+                except ResponseCaptureTimeout as exc:
+                    st.session_state.pending_manual = {
+                        "platform": platform,
+                        "user_message": user_input,
+                        "user_already_sent": True,
+                        "message": (
+                            f"**Response capture timed out** — {exc.detail}\n\n"
+                            "Copy the reply from the browser and paste it below."
+                        ),
+                    }
+                    st.warning(str(exc))
+
+                except Exception as exc:
+                    # Persist the error so it survives st.rerun()
+                    import traceback
+                    error_detail = traceback.format_exc()
+                    st.session_state.last_send_error = (
+                        f"❌ **Error sending to {platform}:**\n\n"
+                        f"`{type(exc).__name__}: {exc}`\n\n"
+                        f"<details><summary>Full traceback</summary>\n\n"
+                        f"```\n{error_detail}\n```\n\n</details>"
                     )
-                st.markdown(response)
-                # Clear red flags after successful send
-                st.session_state.selected_red_ids = []
-                success = True
-
-            except BrowserActionRequired as exc:
-                st.session_state.pending_manual = {
-                    "platform": platform,
-                    "user_message": user_input,
-                    "user_already_sent": False,
-                    "message": (
-                        f"**Browser action needed** — {exc.detail}\n\n"
-                        "Complete the step in the browser tab, then paste the response below."
-                    ),
-                }
-                st.warning(str(exc))
-
-            except ResponseCaptureTimeout as exc:
-                st.session_state.pending_manual = {
-                    "platform": platform,
-                    "user_message": user_input,
-                    "user_already_sent": True,
-                    "message": (
-                        f"**Response capture timed out** — {exc.detail}\n\n"
-                        "Copy the reply from the browser and paste it below."
-                    ),
-                }
-                st.warning(str(exc))
-
-            except Exception as exc:
-                # Persist the error so it survives st.rerun()
-                import traceback
-                error_detail = traceback.format_exc()
-                st.session_state.last_send_error = (
-                    f"❌ **Error sending to {platform}:**\n\n"
-                    f"`{type(exc).__name__}: {exc}`\n\n"
-                    f"<details><summary>Full traceback</summary>\n\n"
-                    f"```\n{error_detail}\n```\n\n</details>"
-                )
-                st.error(f"Error: {exc}")
+                    st.error(f"Error: {exc}")
 
         # Only rerun on success (to refresh history display)
         if success:

@@ -37,7 +37,7 @@ This document is an exhaustive, self-contained reference guide for Dalal AI. It 
   - *Exceptions raised:* `ConnectionError` (if browser fails to launch/connect).
 
 ### 2.2 `dalal_ai/browser/response_script.js`
-**Responsibility:** A static JavaScript asset containing the `_RESPONSE_TO_MARKDOWN_SCRIPT` string. It recursively walks DOM nodes, parsing KaTeX/MathJax into standard `$math$` and `$$math$$` blocks, and extracting raw text with Markdown semantics (`##`, `**`, `>`).
+**Responsibility:** A static JavaScript asset containing the `_RESPONSE_TO_MARKDOWN_SCRIPT` string. It recursively walks DOM nodes, parsing KaTeX/MathJax into standard `$math$` and `$$math$$` blocks, and extracting raw text with Markdown semantics (`##`, `**`, `>`). Crucially, it traverses `<table>`, `<tr>`, `<th>`, and `<td>` elements to reconstruct standard Markdown tables with `|` and `---` delimiters so they render properly in Streamlit.
 
 ### 2.3 `dalal_ai/core/context_manager.py`
 **Responsibility:** Manages the chronological history array and disk persistence.
@@ -66,7 +66,7 @@ This document is an exhaustive, self-contained reference guide for Dalal AI. It 
   - *Methods:* `build_context(messages, query: str, max_tokens: int)`. Uses `scikit-learn` `TfidfVectorizer` and `numpy` dot products. Extracts `recent_count` messages unconditionally, chunks the rest, ranks by TextRank (centrality) and BM25 (relevance to `query`), and returns the top chunks fitting `max_tokens`.
 
 ### 2.6 `dalal_ai/core/orchestrator.py`
-**Responsibility:** Bridging UI requests with context and browser injection.
+**Responsibility:** Bridging UI requests with context and single-agent browser injection.
 - **`class Orchestrator`:**
   - *Methods:* `send_message(platform, user_message, flagged_mgr, selected_red_ids)`:
     1. Checks if `platform != context.last_used_model`.
@@ -77,7 +77,17 @@ This document is an exhaustive, self-contained reference guide for Dalal AI. It 
     6. Calls `context.add_message("assistant", ...)`.
     7. Returns response string.
 
-### 2.7 `utils/exceptions.py`
+### 2.7 `dalal_ai/core/swarm_orchestrator.py`
+**Responsibility:** Multi-agent parallel coordination.
+- **`class SwarmOrchestrator`:**
+  - *Methods:* `execute_swarm_task(prompt, moderator, max_rounds=3)`:
+    - A generator implementing a 4-Phase loop.
+    - Yields `{"type": "status", "message": "..."}` or `{"type": "complete", "answer": "..."}`.
+    - Parses JSON plans from the moderator via regex fallbacks.
+    - Uses `BrowserManager.send_prompts_batch()` and `BrowserManager.extract_responses_batch()` to execute tasks concurrently on worker tabs.
+    - Aggregates results in XML tags (`<worker name="..." role="...">...</worker>`) to inject back into the moderator.
+
+### 2.8 `utils/exceptions.py`
 **Responsibility:** Defines domain-specific errors.
 - `BrowserActionRequired(Exception)`: Raised when a CSS selector is missing, input is blocked, or CAPTCHA prevents interaction.
 - `ResponseCaptureTimeout(Exception)`: Raised when the DOM extraction loop exceeds `max_response_wait_s` without stabilizing.
@@ -136,7 +146,8 @@ platforms:
       "content": "Hi there",
       "model": "chatgpt",
       "timestamp": "2024-05-15T14:30:05.000Z",
-      "flag": null
+      "flag": null,
+      "swarm_role": null
     }
   ]
 }
@@ -145,6 +156,7 @@ platforms:
 - `"green"`: Global context. Sent to a new model upon first interaction.
 - `"red"`: On-demand context. Sent to a known model *only* if explicitly checked in the Pending Switch Modal.
 - `null`: Ignored by FlaggedContextManager.
+*Swarm Role:* Tracks if the message was part of a Swarm workflow (`"moderator"`, `"worker"`, or `null`).
 *Note: Upon load, `ContextManager` iterates through messages; if `"flag"` is missing (legacy files), it sets it to `null`.*
 
 **In-Memory State (`ContextManager`):**
@@ -220,6 +232,9 @@ This is prepended to the user's fresh message.
 5. If the string changes, `stable_count = 0`.
 6. Checks if the `stop_button` is present (meaning generation is definitely ongoing). If present, `stable_count = 0`.
 7. Once `stable_count >= stability_samples`, the loop breaks, returning the final Markdown string.
+
+**Batch Extraction (`BrowserManager._extract_responses_batch_impl`):**
+- Operates similarly but loops over an array of tabs in a round-robin fashion on a single thread. This permits multiple Playwright pages to receive network data simultaneously, drastically speeding up Swarm generation.
 
 **Error Handling:**
 - If loop hits `max_response_wait_s`, raises `ResponseCaptureTimeout`.

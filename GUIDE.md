@@ -77,7 +77,7 @@ Or double-click `run.bat` on Windows.
 
 Your browser opens at **http://localhost:8501** with a chat interface that renders:
 - **LaTeX math** — inline `$E=mc^2$` and block `$$\int_0^1 x^2\,dx$$`
-- **Markdown** — headings, lists, tables, bold/italic
+- **Markdown** — headings, lists, proper tables (with `|` separators), bold/italic
 - **Code blocks** — syntax-highlighted fenced code
 - **Model badges** — colour-coded labels per platform
 
@@ -134,11 +134,21 @@ The tool auto-detects the executable path on Windows and macOS. If your browser 
 | Model picker | Sidebar dropdown to target ChatGPT, Claude, Gemini, or DeepSeek |
 | Context Flags | Click 🟩 (Green) or 🟥 (Red) on any message to control cross-model context delivery |
 | Switch Flow | A pending switch modal lets you attach specific red-flagged messages before changing models |
-| Rich rendering | Markdown, LaTeX math, tables, and code blocks in chat bubbles |
-| Live status | Activity log while waiting for browser responses |
+| Swarm Mode | A toggle to enable the Parallel JSON Engine, allowing a Moderator AI to delegate tasks to multiple Worker AIs simultaneously |
+| Rich rendering | Markdown, LaTeX math, structured tables, and code blocks in chat bubbles |
+| Live status | Activity log and real-time streaming updates while waiting for browser or Swarm responses |
 | Manual paste | If automation times out, paste the response from the browser tab |
 | Stats | Message count, character/token count, models used, and context delivery tracking |
 | Clear history | Reset conversation with one click |
+
+### 🐝 Swarm Mode (Parallel JSON Engine)
+
+Dalal AI v2 features a **Swarm Mode** that allows you to orchestrate multiple AIs at once to solve complex problems.
+
+1. Toggle **"🐝 Enable Swarm Mode"** in the sidebar.
+2. Select your **Moderator AI** (e.g., ChatGPT).
+3. Type a complex prompt. The Moderator AI will automatically create a structured JSON plan, break the task into pieces, and delegate it to other tabs (like Claude and Gemini).
+4. The system extracts responses from all delegated workers **in parallel** (saving massive amounts of time), wraps them in XML, and feeds them back to the Moderator to synthesize a final answer.
 
 ### LaTeX Examples
 
