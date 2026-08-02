@@ -163,7 +163,7 @@ class BrowserManager:
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self._launched_process: Optional[subprocess.Popen] = None
-        self._pages: dict[str, Page] = {}
+        self._pages: dict[str, list[Page]] = {}
         # Snapshot the page immediately before each send.  Without this, a
         # completed reply already visible in the tab can be mistaken for the
         # reply to the prompt we have just sent.
@@ -211,12 +211,42 @@ class BrowserManager:
         """Wait for model response and extract it (thread-safe)."""
         return self._worker.run(self._extract_stable_response_impl, platform)
 
+    def send_prompts_batch(self, prompts: list[tuple[str, str]]) -> None:
+        """Type prompts into multiple platforms sequentially (thread-safe)."""
+        self._worker.run(self._send_prompts_batch_impl, prompts)
+
+    def _send_prompts_batch_impl(self, prompts: list[tuple[str, str]]) -> None:
+        """Sequentially type and send prompts on the Playwright thread."""
+        for platform_id, text in prompts:
+            try:
+                self._send_organic_prompt_impl(platform_id, text)
+            except Exception as exc:
+                self._status(f"⚠ Failed to send prompt to {platform_id}: {exc}")
+
+    def extract_responses_batch(self, platforms: list[str]) -> dict[str, str]:
+        """Wait for multiple model responses concurrently (thread-safe)."""
+        return self._worker.run(self._extract_responses_batch_impl, platforms)
+
+    def _extract_responses_batch_impl(self, platforms: list[str]) -> dict[str, str]:
+        """Sequentially wait for responses on the Playwright thread (they generate concurrently)."""
+        results = {}
+        for platform_id in platforms:
+            try:
+                results[platform_id] = self._extract_stable_response_impl(platform_id)
+            except Exception as exc:
+                results[platform_id] = f"[Error extracting response: {exc}]"
+        return results
+
     def list_open_tabs(self) -> list[dict]:
         """Return info about all open tabs (thread-safe)."""
         try:
             return self._worker.run(self._list_open_tabs_impl, timeout=10)
         except Exception:
             return []
+
+    def prelaunch_tabs(self, platform: str, count: int) -> None:
+        """Pre-launch a specific number of tabs for a platform (thread-safe)."""
+        self._worker.run(self._discover_platform_pages, required_count=count, force_platform=platform)
 
     # ── Browser Auto-Launch (runs on worker thread) ───────────────────────────
 
@@ -327,28 +357,34 @@ class BrowserManager:
 
     # ── Page Discovery (runs on worker thread) ────────────────────────────────
 
-    def _discover_platform_pages(self) -> None:
+    def _discover_platform_pages(self, required_count: int = 1, force_platform: Optional[str] = None) -> None:
         """Match existing tabs to configured platforms, opening missing ones."""
         if not self._context:
             return
+            
+        # Clear and rebuild mapping
+        self._pages.clear()
         for name, plat_conf in self._platforms.items():
+            self._pages[name] = []
             target_url = plat_conf["url"]
-            found = False
             for page in self._context.pages:
                 try:
                     if self._urls_match(page.url, target_url):
-                        self._pages[name] = page
-                        found = True
-                        break
+                        self._pages[name].append(page)
                 except Exception:
                     continue
-            if not found:
+
+        # Ensure minimum tabs are open for the requested platform
+        if force_platform and force_platform in self._platforms:
+            target_url = self._platforms[force_platform]["url"]
+            while len(self._pages[force_platform]) < required_count:
                 try:
                     new_page = self._context.new_page()
                     new_page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
-                    self._pages[name] = new_page
+                    self._pages[force_platform].append(new_page)
                 except Exception as exc:
-                    self._status(f"⚠ Could not open tab for {name}: {exc}")
+                    self._status(f"⚠ Could not open tab for {force_platform}: {exc}")
+                    break
 
     @staticmethod
     def _urls_match(page_url: str, config_url: str) -> bool:
@@ -357,28 +393,37 @@ class BrowserManager:
         config_domain = urlparse(config_url).netloc.replace("www.", "")
         return page_domain == config_domain
 
-    def _get_page(self, platform: str) -> Page:
+    def _get_page(self, platform_id: str) -> Page:
         """Return the Playwright Page for a platform, rediscovering if needed."""
-        if platform not in self._pages:
-            self._discover_platform_pages()
-        if platform not in self._pages:
+        if ":" in platform_id:
+            platform, idx_str = platform_id.split(":", 1)
+            idx = int(idx_str)
+        else:
+            platform = platform_id
+            idx = 0
+            
+        if platform not in self._pages or len(self._pages.get(platform, [])) <= idx:
+            self._discover_platform_pages(required_count=idx + 1, force_platform=platform)
+            
+        if platform not in self._pages or len(self._pages[platform]) <= idx:
             raise RuntimeError(
-                f"No browser tab found for '{platform}'. "
+                f"No browser tab found for '{platform_id}'. "
                 f"Please open {self._platforms[platform]['url']} in the browser."
             )
-        return self._pages[platform]
+        return self._pages[platform][idx]
 
     # ── Organic Prompt Sending (runs on worker thread) ────────────────────────
 
-    def _send_organic_prompt_impl(self, platform: str, text: str) -> None:
+    def _send_organic_prompt_impl(self, platform_id: str, text: str) -> None:
         """Type (or paste) a prompt and click send on the given platform tab."""
-        page = self._get_page(platform)
+        platform = platform_id.split(":")[0]
+        page = self._get_page(platform_id)
         plat = self._platforms[platform]
         typing_delay = self._timing.get("typing_delay_ms", 12)
 
         # Record the state before interacting with the page, while the prior
         # response is still the last matching element.
-        self._response_baselines[platform] = self._get_response_snapshot(
+        self._response_baselines[platform_id] = self._get_response_snapshot(
             page, plat["response_selector"]
         )
 
@@ -471,9 +516,10 @@ class BrowserManager:
 
     # ── Response Extraction (runs on worker thread) ───────────────────────────
 
-    def _extract_stable_response_impl(self, platform: str) -> str:
+    def _extract_stable_response_impl(self, platform_id: str) -> str:
         """Poll the DOM until the model's response text stabilises."""
-        page = self._get_page(platform)
+        platform = platform_id.split(":")[0]
+        page = self._get_page(platform_id)
         plat = self._platforms[platform]
         stability_wait = self._timing.get("stability_wait_s", 2.0)
         stability_samples = self._timing.get("stability_samples", 3)
@@ -481,7 +527,7 @@ class BrowserManager:
 
         start_time = time.time()
         baseline = self._response_baselines.get(
-            platform, self._get_response_snapshot(page, plat["response_selector"])
+            platform_id, self._get_response_snapshot(page, plat["response_selector"])
         )
         generation_seen = False
         response_seen = False
@@ -533,10 +579,10 @@ class BrowserManager:
                 return last_text
 
             raise TimeoutError(
-                f"⏱ Timed out waiting for a new {platform} response after {max_wait}s."
+                f"⏱ Timed out waiting for a new {platform_id} response after {max_wait}s."
             )
         finally:
-            self._response_baselines.pop(platform, None)
+            self._response_baselines.pop(platform_id, None)
 
     def _get_last_response_text(self, page: Page, selector: str) -> Optional[str]:
         """Return the Markdown text of the latest response element, or None."""

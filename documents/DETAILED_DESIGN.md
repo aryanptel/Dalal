@@ -54,7 +54,7 @@ The local database tracking conversation turns.
     - `last_used_model: Optional[str]`: Tracks the previous turn to detect model switches.
   - **Key Methods:**
     - `add_message(role, content, model, flag=None)`: Appends a message containing the new `"flag"` field and triggers `_auto_save()`. When loading existing `chat_history.json`, older messages missing the flag field are automatically patched with `"flag": None`.
-    - `build_context_transcript(max_chars, messages)`: Transforms a list of raw message dictionaries into a continuous Markdown transcript block, injecting chronological markers. Truncates from the *oldest* messages if `max_chars` is exceeded to protect browser input limits.
+    - `build_context_transcript(max_chars, messages)`: Transforms a list of raw message dictionaries into a continuous Markdown transcript block, injecting chronological markers. (Note: Artificial prompt trimming logic was intentionally removed to ensure mathematical context is fully preserved, bypassing max_chars).
     - `update_flag(index, new_flag)`: Modifies the flag state ("green", "red", or None) of a specific message. Enforces flag exclusivity and calls `_auto_save()`.
     - `get_stats()`: Returns session metrics, including total messages, character counts, models used, user messages, and assistant messages.
 
@@ -96,7 +96,20 @@ The bridge between the UI and the backend systems.
       - Calls `browser_manager.extract_stable_response()`.
       - Catches exceptions (`BrowserActionRequired`, `ResponseCaptureTimeout`) and bubbles them to the UI for manual intervention.
 
-### 3.6 Web UI (`dalal_ai/ui/app.py`)
+### 3.6 Swarm Orchestrator (`dalal_ai/core/swarm_orchestrator.py`)
+Handles the Parallel JSON Plan Engine logic.
+
+- **`class SwarmOrchestrator`**
+  - **Key Methods:**
+    - `execute_swarm_task(prompt, moderator, workers, flagged_mgr, selected_red_ids)`:
+      - Automatically isolates index 0 for the Moderator AI (e.g., `deepseek:0`).
+      - Compiles green-flagged context via `flagged_mgr` and prepends it to both the Moderator's system prompt and all sub-task worker prompts.
+      - Implements a **Two-Mode Moderator Protocol**:
+        - **Mode 1 (Delegating):** The Moderator outputs JSON containing sub-tasks. `execute_swarm_task` parses this and delegates Playwright requests to `worker:n` indexes in parallel. It also yields a formatted JSON string to UI so it can be neatly rendered in an `st.status` collapsible header.
+        - **Mode 2 (Final Answer):** The Moderator outputs its final synthesized answer in pure, unwrapped Markdown (no JSON wrapper). `_extract_json()` elegantly fails to find a JSON block and `execute_swarm_task` safely wraps the raw Markdown in a synthetic `{"status": "complete"}` dict, completely avoiding JSON escaping/parsing bugs on massive text outputs.
+      - Uses `_extract_json()` which features `codecs.decode(..., 'unicode_escape')` regex fallback parsing to gracefully recover AI responses that contain unescaped newline literals in JSON string blocks during Mode 1.
+
+### 3.7 Web UI (`dalal_ai/ui/app.py`)
 The primary Streamlit frontend.
 
 - **Architecture:** 

@@ -63,7 +63,7 @@ class ContextManager:
 
     # ── Core Operations ───────────────────────────────────────────────────────
 
-    def add_message(self, role: str, content: str, model: str, flag: Optional[str] = None) -> None:
+    def add_message(self, role: str, content: str, model: str, flag: Optional[str] = None, swarm_role: Optional[str] = None) -> None:
         """
         Record a message in the local history.
 
@@ -73,6 +73,7 @@ class ContextManager:
         content : str   The message text
         model : str   Platform name (chatgpt / claude / gemini)
         flag : Optional[str]  "green", "red", or None
+        swarm_role : Optional[str]  "moderator", "worker", or None
         """
         if role not in {"user", "assistant"}:
             raise ValueError("role must be 'user' or 'assistant'")
@@ -88,6 +89,7 @@ class ContextManager:
             "content": content,
             "model": model,
             "flag": flag,
+            "swarm_role": swarm_role,
             "timestamp": datetime.now().isoformat(),
         })
         self.last_used_model = model
@@ -153,25 +155,6 @@ class ContextManager:
         footer = "\n\n---\n\n**Continue the conversation below. Respond to the user's latest message.**"
 
         body = "\n\n".join(lines)
-
-        # Truncate from the front (oldest messages) if over limit.
-        if max_chars is None:
-            return header + body + footer
-
-        marker = "[...earlier messages trimmed...]\n\n"
-        available = max_chars - len(header) - len(footer)
-        if available <= 0:
-            return (header + footer)[:max_chars]
-
-        while len(body) > available and len(lines) > 1:
-            lines.pop(0)
-            body = marker + "\n\n".join(lines)
-
-        if len(body) > available:
-            if available <= len(marker):
-                body = marker[:available]
-            else:
-                body = marker + body[-(available - len(marker)):]
 
         return header + body + footer
 
