@@ -104,8 +104,10 @@ Handles the Parallel JSON Plan Engine logic.
     - `execute_swarm_task(prompt, moderator, workers, flagged_mgr, selected_red_ids)`:
       - Automatically isolates index 0 for the Moderator AI (e.g., `deepseek:0`).
       - Compiles green-flagged context via `flagged_mgr` and prepends it to both the Moderator's system prompt and all sub-task worker prompts.
-      - Receives the plan from the Moderator and delegates parallel Playwright requests to `worker:n` indexes.
-      - Uses `_extract_json()` which features `codecs.decode(..., 'unicode_escape')` regex fallback parsing to gracefully recover AI responses that contain unescaped newline literals in JSON string blocks.
+      - Implements a **Two-Mode Moderator Protocol**:
+        - **Mode 1 (Delegating):** The Moderator outputs JSON containing sub-tasks. `execute_swarm_task` parses this and delegates Playwright requests to `worker:n` indexes in parallel. It also yields a formatted JSON string to UI so it can be neatly rendered in an `st.status` collapsible header.
+        - **Mode 2 (Final Answer):** The Moderator outputs its final synthesized answer in pure, unwrapped Markdown (no JSON wrapper). `_extract_json()` elegantly fails to find a JSON block and `execute_swarm_task` safely wraps the raw Markdown in a synthetic `{"status": "complete"}` dict, completely avoiding JSON escaping/parsing bugs on massive text outputs.
+      - Uses `_extract_json()` which features `codecs.decode(..., 'unicode_escape')` regex fallback parsing to gracefully recover AI responses that contain unescaped newline literals in JSON string blocks during Mode 1.
 
 ### 3.7 Web UI (`dalal_ai/ui/app.py`)
 The primary Streamlit frontend.

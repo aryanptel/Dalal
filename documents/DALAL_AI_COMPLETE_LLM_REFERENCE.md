@@ -84,7 +84,9 @@ This document is an exhaustive, self-contained reference guide for Dalal AI. It 
     - A generator implementing a 4-Phase loop. Yields `{"type": "status"}` and `{"type": "complete"}` dicts for Streamlit rendering.
     - Explicitly reserves the `0` index for the moderator tab (e.g., `deepseek:0`) and maps worker arrays to `platform:1`, `platform:2`, etc. to prevent tab collisions.
     - Uses `flagged_mgr` to compile a full transcript of 🟩 green-flagged messages and prepends this to the System Prompts of BOTH the Moderator and the Workers.
-    - Parses JSON plans from the moderator via regex fallbacks. Employs `codecs.decode(..., 'unicode_escape')` during fallback to gracefully parse corrupted JSON blocks containing unescaped newline literals.
+    - Implements the **Two-Mode Protocol**:
+      - **Mode 1 (Delegating):** The Moderator outputs JSON containing sub-tasks. Parses JSON plans via regex fallbacks (employing `codecs.decode(..., 'unicode_escape')` to parse corrupted JSON blocks containing unescaped newline literals). Yields the formatted JSON as part of the `{"type": "status"}` object so Streamlit can render it cleanly in the UI.
+      - **Mode 2 (Final Answer):** The Moderator outputs pure, unwrapped Markdown. The orchestrator catches the ensuing `ValueError` from `_extract_json()` and natively pipelines the raw Markdown directly to the user (bypassing JSON restrictions).
     - Uses `BrowserManager.send_prompts_batch()` and `BrowserManager.extract_responses_batch()` to execute tasks concurrently on worker tabs.
     - Aggregates results in XML tags (`<worker name="..." role="...">...</worker>`) to inject back into the moderator.
 
