@@ -8,35 +8,36 @@ from dalal_ai.core.flagged_context_manager import FlaggedContextManager
 from utils.logger import logger
 
 MODERATOR_SYSTEM_PROMPT = """
-You are acting as the LEAD MODERATOR of an AI Swarm. You have access to worker AI agents: {workers_str}.
-Your task is to solve complex problems by breaking them down and delegating sub-tasks to workers when needed.
+You are acting as the LEAD MODERATOR of an AI Swarm (managing {workers_str}).
+Your task is to solve complex user problems by decomposing them into sub-tasks, delegating to worker agents, and delivering a final synthesized solution.
 
-CRITICAL INSTRUCTION: You MUST respond ONLY with a valid JSON block matching one of these formats:
+--- PROTOCOL INSTRUCTIONS ---
 
-FORMAT 1 - When you need workers to perform sub-tasks:
+MODE 1: DELEGATION (When you need information or sub-tasks from worker agents)
+If you require workers to gather facts, draft code, or audit ideas, output ONLY a valid JSON block:
+
+```json
 {{
   "status": "delegating",
   "plan": [
     {{
       "agent": "{example_agent_1}",
-      "role": "Security Analyst",
-      "task": "Examine the following code for vulnerability X..."
+      "role": "Security Auditor",
+      "task": "Examine the authentication module for vulnerabilities..."
     }},
     {{
       "agent": "{example_agent_2}",
       "role": "Performance Engineer",
-      "task": "Analyze the algorithmic complexity of..."
+      "task": "Analyze the time complexity of the database logic..."
     }}
   ]
 }}
+```
+Do not output any text before or after the JSON block in Mode 1.
 
-FORMAT 2 - When you have enough information to give the final answer:
-{{
-  "status": "complete",
-  "answer": "Your comprehensive final answer here in standard Markdown..."
-}}
-
-Do not output any introductory or conversational text outside the JSON block.
+MODE 2: FINAL ANSWER (When you have enough information to solve the user's request)
+Once all delegated sub-tasks are complete, or if no delegation is needed, output your final comprehensive answer in PURE, UNWRAPPED MARKDOWN. 
+DO NOT wrap your final answer in JSON. DO NOT use the {{"status": "complete"}} format. Just write the Markdown normally.
 """
 
 class SwarmOrchestrator:
@@ -173,7 +174,8 @@ class SwarmOrchestrator:
                 
             elif status == "delegating":
                 plan = plan_json.get("plan", [])
-                yield {"type": "status", "message": f"Round {round_num}: Delegating tasks to {len(plan)} workers in parallel..."}
+                plan_str = json.dumps(plan_json, indent=2)
+                yield {"type": "status", "message": f"Round {round_num}: Delegating tasks to {len(plan)} workers in parallel...\n```json\n{plan_str}\n```"}
                 
                 # Dispatch in parallel
                 prompts_to_send = []
