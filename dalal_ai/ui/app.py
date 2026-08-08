@@ -88,6 +88,7 @@ def init_session_state(config: dict[str, Any]) -> None:
     st.session_state.swarm_orchestrator = None
     st.session_state.swarm_mode = False
     st.session_state.swarm_moderator = "chatgpt"
+    st.session_state.retry_action = None
     st.session_state.initialized = True
 
 
@@ -140,8 +141,9 @@ def render_model_badge(model: str) -> str:
     )
 
 
-def render_flag_controls(index: int, flag: Optional[str]) -> None:
-    c1, c2, c3 = st.columns([1, 1, 15])
+def render_flag_controls(index: int, msg: dict[str, Any]) -> None:
+    flag = msg.get("flag")
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 14])
     
     def toggle_green():
         new_flag = None if flag == "green" else "green"
@@ -151,12 +153,19 @@ def render_flag_controls(index: int, flag: Optional[str]) -> None:
         new_flag = None if flag == "red" else "red"
         st.session_state.context.update_flag(index, new_flag)
         
+    def trigger_retry():
+        st.session_state.retry_action = {"index": index, "msg": msg}
+        
     with c1:
         icon_g = "🟩" if flag == "green" else "⚪"
         st.button(icon_g, key=f"g_{index}", on_click=toggle_green, help="Toggle Global Context (Green)")
     with c2:
         icon_r = "🟥" if flag == "red" else "⚪"
         st.button(icon_r, key=f"r_{index}", on_click=toggle_red, help="Toggle On-Demand Context (Red)")
+    with c3:
+        is_last = (index == len(st.session_state.context.messages) - 1)
+        if msg["role"] == "assistant" or is_last:
+            st.button("🔄", key=f"retry_{index}", on_click=trigger_retry, help="Retry Fetching Response")
 
 
 def render_message(index: int, msg: dict[str, Any]) -> None:
@@ -169,7 +178,7 @@ def render_message(index: int, msg: dict[str, Any]) -> None:
 
     if role == "user":
         with st.chat_message("user", avatar="👤"):
-            render_flag_controls(index, flag)
+            render_flag_controls(index, msg)
             if swarm_role == "worker":
                 st.caption(f"*(Delegated to Swarm Worker)*")
             st.markdown(content)
@@ -185,7 +194,7 @@ def render_message(index: int, msg: dict[str, Any]) -> None:
             badge = render_model_badge(model)
 
         with st.chat_message("assistant", avatar=avatar):
-            render_flag_controls(index, flag)
+            render_flag_controls(index, msg)
             st.markdown(badge, unsafe_allow_html=True)
             st.markdown(content)
 
@@ -470,6 +479,31 @@ with st.sidebar:
 # ── Auto-connect on first load ────────────────────────────────────────────────
 if not st.session_state.connected and not st.session_state.connection_error:
     connect_browser()
+
+# Process any pending retry action
+if st.session_state.get("retry_action"):
+    action = st.session_state.retry_action
+    st.session_state.retry_action = None
+    
+    idx = action["index"]
+    retry_msg = action["msg"]
+    platform = retry_msg.get("model")
+    
+    if platform and st.session_state.orchestrator:
+        with st.spinner(f"Retrying fetch from {platform}..."):
+            try:
+                response = st.session_state.orchestrator.browser.extract_stable_response(platform)
+                if retry_msg["role"] == "assistant":
+                    st.session_state.context.update_message_content(idx, response)
+                else:
+                    st.session_state.context.add_message("assistant", response, model=platform)
+                
+                if st.session_state.pending_manual and st.session_state.pending_manual.get("platform") == platform:
+                    st.session_state.pending_manual = None
+                
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Retry failed: {exc}")
 
 # ── Main chat area ────────────────────────────────────────────────────────────
 st.markdown("### Chat")

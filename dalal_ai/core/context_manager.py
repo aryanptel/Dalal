@@ -109,6 +109,12 @@ class ContextManager:
             self.messages[index]["flag"] = new_flag
             self._auto_save()
 
+    def update_message_content(self, index: int, new_content: str) -> None:
+        """Update the content of a specific message and save."""
+        if 0 <= index < len(self.messages):
+            self.messages[index]["content"] = new_content
+            self._auto_save()
+
     def build_context_transcript(
         self,
         max_chars: Optional[int] = 20000,
