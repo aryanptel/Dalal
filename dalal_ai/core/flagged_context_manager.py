@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from dalal_ai.core.context_compressor import ContextCompressor
+
 
 
 class FlaggedContextManager:
@@ -70,9 +70,8 @@ class FlaggedContextManager:
         has_any_flags = any(msg.get("flag") in {"green", "red"} for msg in chat_history)
 
         if not has_any_flags:
-            # Fallback to the mathematical compressor for backward compatibility
-            compressor = ContextCompressor(max_tokens=self.max_tokens)
-            return compressor.build_context(chat_history, "")
+            # Strict mode: If no flags are set, do not send any context.
+            return []
 
         if target_model not in self.session_delivered:
             self.session_delivered[target_model] = set()

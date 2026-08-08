@@ -165,15 +165,28 @@ def render_message(index: int, msg: dict[str, Any]) -> None:
     content = msg["content"]
     model = msg.get("model", "")
     flag = msg.get("flag")
+    swarm_role = msg.get("swarm_role")
 
     if role == "user":
         with st.chat_message("user", avatar="👤"):
             render_flag_controls(index, flag)
+            if swarm_role == "worker":
+                st.caption(f"*(Delegated to Swarm Worker)*")
             st.markdown(content)
     else:
-        with st.chat_message("assistant", avatar="🤖"):
+        if swarm_role == "moderator":
+            avatar = "🐝"
+            badge = f"**Swarm Mode:** {render_model_badge(model)} is moderating."
+        elif swarm_role == "worker":
+            avatar = "🐝"
+            badge = f"**Swarm Worker:** {render_model_badge(model)}"
+        else:
+            avatar = "🤖"
+            badge = render_model_badge(model)
+
+        with st.chat_message("assistant", avatar=avatar):
             render_flag_controls(index, flag)
-            st.markdown(render_model_badge(model), unsafe_allow_html=True)
+            st.markdown(badge, unsafe_allow_html=True)
             st.markdown(content)
 
 
