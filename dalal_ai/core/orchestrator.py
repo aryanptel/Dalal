@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import Any, Callable, Optional
 
 from dalal_ai.browser.browser_manager import BrowserManager
-from dalal_ai.core.context_compressor import ContextCompressor
 from dalal_ai.core.context_manager import ContextManager
 from dalal_ai.core.flagged_context_manager import FlaggedContextManager
 from utils.exceptions import BrowserActionRequired, ResponseCaptureTimeout
@@ -110,11 +109,10 @@ class Orchestrator:
                 selected = flagged_mgr.build_context(
                     self.context.messages, platform, selected_red_ids
                 )
-                transcript_limit = None
             else:
-                compressor = ContextCompressor()
-                selected = compressor.build_context(self.context.messages, user_message)
-                transcript_limit = 20000
+                selected = []
+                
+            transcript_limit = None
 
             transcript = self.context.build_context_transcript(
                 messages=selected, max_chars=transcript_limit

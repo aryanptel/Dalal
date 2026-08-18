@@ -11,10 +11,6 @@ from __future__ import annotations
 import math
 from typing import Any
 
-import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-
 from utils.logger import logger
 
 
@@ -23,19 +19,6 @@ class ContextCompressor:
     Compresses chat history into a subset of important messages to fit a token budget.
 
     Uses TF-IDF, TextRank for structural importance, and BM25 for query relevance.
-
-    Parameters
-    ----------
-    recent_count : int
-        Number of most recent messages to unconditionally include. Default is 10.
-    chunk_size : int
-        Number of consecutive older messages to group together for analysis. Default is 3.
-    alpha : float
-        Weight for TextRank centrality (1 - alpha for BM25). Default is 0.4.
-    edge_threshold : float
-        Cosine similarity threshold for TextRank graph edges. Default is 0.3.
-    max_tokens : int
-        Maximum number of tokens allowed in the final context. Default is 4000.
     """
 
     def __init__(
@@ -54,30 +37,20 @@ class ContextCompressor:
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:
-        """Estimate token count as ``len(text.split()) * 1.3``."""
         return int(len(text.split()) * 1.3)
 
     def _estimate_message_tokens(self, message: dict[str, Any]) -> int:
-        """Estimate the token count for a single message dict."""
         return self._estimate_tokens(message.get("content", ""))
 
     def build_context(
         self, chat_history: list[dict[str, Any]], current_query: str
     ) -> list[dict[str, Any]]:
-        """
-        Select a subset of messages from *chat_history* that fit the token budget,
-        prioritising recent messages, structurally central chunks (TextRank), and
-        query-relevant chunks (BM25).
-
-        Returns a chronologically ordered list of message dicts.
-        """
         if len(chat_history) <= self.recent_count:
             return chat_history.copy()
 
         recent_messages = chat_history[-self.recent_count:]
         older_messages = chat_history[:-self.recent_count]
 
-        # Token budget calculation
         recent_tokens = sum(self._estimate_message_tokens(msg) for msg in recent_messages)
         query_tokens = self._estimate_tokens(current_query)
         budget = self.max_tokens - recent_tokens - query_tokens
@@ -86,9 +59,8 @@ class ContextCompressor:
             logger.warning("ContextCompressor: Token budget too small. Only returning recent messages.")
             return recent_messages.copy()
 
-        # Step 2 — Chunk older messages
         older_chunks: list[str] = []
-        chunk_mappings: list[list[int]] = []  # Maps chunk index to original message indices
+        chunk_mappings: list[list[int]] = []
         for i in range(0, len(older_messages), self.chunk_size):
             chunk_msgs = older_messages[i:i + self.chunk_size]
             chunk_text = " ".join(msg.get("content", "") for msg in chunk_msgs)
@@ -98,84 +70,106 @@ class ContextCompressor:
         recent_text_chunks = [msg.get("content", "") for msg in recent_messages]
         all_chunks = older_chunks + recent_text_chunks
 
-        # Step 3 — Compute TF-IDF vectors
-        vectorizer = TfidfVectorizer(max_features=5000)
-        try:
-            tfidf_matrix = vectorizer.fit_transform(all_chunks)
-        except ValueError:
-            # e.g., empty vocabulary if all text is stop words or empty
+        # TF-IDF
+        tokenized = [c.split() for c in all_chunks]
+        df = {}
+        for t in tokenized:
+            for term in set(t):
+                df[term] = df.get(term, 0) + 1
+        
+        N = len(all_chunks)
+        if N == 0:
             return recent_messages.copy()
+            
+        idf = {term: math.log((N + 1) / (df[term] + 1)) + 1 for term in df}
+        
+        tfidf_vecs = []
+        for t in tokenized:
+            vec = {}
+            for term in t:
+                vec[term] = vec.get(term, 0) + 1
+            norm = 0.0
+            for term in vec:
+                vec[term] = vec[term] * idf[term]
+                norm += vec[term] ** 2
+            norm = math.sqrt(norm)
+            if norm > 0:
+                for term in vec:
+                    vec[term] /= norm
+            tfidf_vecs.append(vec)
 
-        # Step 4 — TextRank centrality
-        sim_matrix = cosine_similarity(tfidf_matrix)
+        # TextRank
+        sim_matrix = [[0.0] * N for _ in range(N)]
+        for i in range(N):
+            for j in range(N):
+                if i != j:
+                    sim = 0.0
+                    for term in tfidf_vecs[i]:
+                        if term in tfidf_vecs[j]:
+                            sim += tfidf_vecs[i][term] * tfidf_vecs[j][term]
+                    if sim >= self.edge_threshold:
+                        sim_matrix[i][j] = sim
 
-        # Keep edges above threshold and set diagonal to 0
-        np.fill_diagonal(sim_matrix, 0)
-        sim_matrix[sim_matrix < self.edge_threshold] = 0
+        # Stochastic transition
+        transition = [[0.0] * N for _ in range(N)]
+        for i in range(N):
+            row_sum = sum(sim_matrix[i])
+            if row_sum == 0:
+                transition[i][i] = 1.0
+            else:
+                for j in range(N):
+                    transition[i][j] = sim_matrix[i][j] / row_sum
 
-        # Convert to stochastic transition matrix
-        row_sums = sim_matrix.sum(axis=1)
-        row_sums[row_sums == 0] = 1.0
-        transition_matrix = sim_matrix / row_sums[:, np.newaxis]
-
-        # PageRank iterative algorithm
-        n = transition_matrix.shape[0]
+        # PageRank
         d = 0.85
-        pr = np.ones(n) / n
+        pr = [1.0 / N] * N
         for _ in range(30):
-            new_pr = (1 - d) / n + d * transition_matrix.T.dot(pr)
-            if np.linalg.norm(new_pr - pr) < 1e-6:
-                pr = new_pr
-                break
+            new_pr = [(1 - d) / N] * N
+            for j in range(N):
+                for i in range(N):
+                    new_pr[j] += d * transition[i][j] * pr[i]
+            
+            diff = sum((new_pr[i] - pr[i])**2 for i in range(N))**0.5
             pr = new_pr
+            if diff < 1e-6:
+                break
 
         textrank_scores = pr[:len(older_chunks)]
 
-        # Step 5 — BM25 query relevance
-        bm25_scores = np.zeros(len(older_chunks))
+        # BM25
+        bm25_scores = [0.0] * len(older_chunks)
         if current_query.strip():
             k1 = 1.5
             b = 0.75
-
-            tokenized_chunks = [chunk.split() for chunk in all_chunks]
             tokenized_query = current_query.split()
-
-            doc_lengths = np.array([len(chunk) for chunk in tokenized_chunks])
-            avgdl = float(np.mean(doc_lengths)) if len(doc_lengths) > 0 else 1.0
+            doc_lengths = [len(t) for t in tokenized]
+            avgdl = sum(doc_lengths) / max(len(doc_lengths), 1)
             avgdl = max(avgdl, 1e-6)
 
-            n_docs = len(all_chunks)
-            df: dict[str, int] = {}
-            for chunk in tokenized_chunks:
-                for term in set(chunk):
-                    df[term] = df.get(term, 0) + 1
-
-            idf: dict[str, float] = {}
+            bm25_idf = {}
             for term, freq in df.items():
-                idf[term] = math.log((n_docs - freq + 0.5) / (freq + 0.5) + 1.0)
+                bm25_idf[term] = math.log((N - freq + 0.5) / (freq + 0.5) + 1.0)
 
             for i, chunk_text in enumerate(older_chunks):
                 chunk_tokens = chunk_text.split()
                 score = 0.0
                 dl = len(chunk_tokens)
                 for q_term in tokenized_query:
-                    if q_term in idf:
+                    if q_term in bm25_idf:
                         tf = chunk_tokens.count(q_term)
-                        term_score = idf[q_term] * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avgdl))
-                        score += term_score
+                        score += bm25_idf[q_term] * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avgdl))
                 bm25_scores[i] = score
 
-        # Step 6 — Final scoring
+        # Scaling
         tr_scaled = self._min_max_scale(textrank_scores)
-
         if current_query.strip():
             bm25_scaled = self._min_max_scale(bm25_scores)
-            final_scores = self.alpha * tr_scaled + (1 - self.alpha) * bm25_scaled
+            final_scores = [self.alpha * tr + (1 - self.alpha) * bm for tr, bm in zip(tr_scaled, bm25_scaled)]
         else:
             final_scores = tr_scaled
 
-        # Step 7 — Greedy selection within token budget
-        sorted_indices = np.argsort(final_scores)[::-1]
+        # Selection
+        sorted_indices = sorted(range(len(final_scores)), key=lambda k: final_scores[k], reverse=True)
         selected_older_indices: set[int] = set()
 
         for idx in sorted_indices:
@@ -186,7 +180,6 @@ class ContextCompressor:
                 budget -= chunk_tokens
                 selected_older_indices.update(chunk_mappings[idx])
             else:
-                # Fallback: if chunk is too large, attempt individual messages
                 for msg_idx in chunk_mappings[idx]:
                     msg = older_messages[msg_idx]
                     msg_tokens = self._estimate_message_tokens(msg)
@@ -194,7 +187,6 @@ class ContextCompressor:
                         budget -= msg_tokens
                         selected_older_indices.add(msg_idx)
 
-        # Step 8 — Assemble final context (chronological order)
         final_context = [
             msg for i, msg in enumerate(older_messages)
             if i in selected_older_indices
@@ -203,12 +195,11 @@ class ContextCompressor:
         return final_context
 
     @staticmethod
-    def _min_max_scale(scores: np.ndarray) -> np.ndarray:
-        """Normalise an array to [0, 1] via min-max scaling."""
-        if len(scores) == 0:
+    def _min_max_scale(scores: list[float]) -> list[float]:
+        if not scores:
             return scores
-        min_val = np.min(scores)
-        max_val = np.max(scores)
+        min_val = min(scores)
+        max_val = max(scores)
         if max_val > min_val:
-            return (scores - min_val) / (max_val - min_val)
-        return np.zeros_like(scores)
+            return [(s - min_val) / (max_val - min_val) for s in scores]
+        return [0.0] * len(scores)

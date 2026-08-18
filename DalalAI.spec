@@ -19,6 +19,8 @@ a = Analysis(
     datas=datas,
     hiddenimports=[
         'streamlit',
+        'streamlit.runtime.scriptrunner.magic_funcs',
+        'streamlit.runtime.scriptrunner.script_run_context',
         'playwright',
         'yaml',
         'colorama',
@@ -29,7 +31,10 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        'numpy', 'scipy', 'pandas', 'matplotlib', 'IPython', 
+        'pytest', 'unittest', 'PyQt5', 'pyarrow'
+    ],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

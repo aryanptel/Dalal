@@ -54,8 +54,8 @@ class FlaggedContextManager:
 
         Behaviour
         ---------
-        1. If no flags exist in *chat_history*, fall back to
-           :class:`ContextCompressor` for algorithmic selection.
+        1. Strict mode: If no flags exist in *chat_history*, returns an empty
+           list (no context sent).
         2. First time a model is seen: gather all green-flagged messages,
            mark them delivered.
         3. Subsequent uses: gather only explicitly selected red-flagged

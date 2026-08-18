@@ -3,6 +3,12 @@ import sys
 import shutil
 import subprocess
 
+if sys.platform == "win32":
+    for stream in ("stdout", "stderr"):
+        s = getattr(sys, stream)
+        if hasattr(s, "reconfigure"):
+            s.reconfigure(encoding="utf-8", errors="replace")
+
 def clean():
     print("🧹 Cleaning previous builds...")
     for folder in ["build", "dist", "release"]:
