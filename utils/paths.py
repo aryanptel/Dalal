@@ -29,6 +29,12 @@ def get_logs_dir() -> str:
     os.makedirs(logs_dir, exist_ok=True)
     return logs_dir
 
+def get_attachments_dir() -> str:
+    """Return the path to the attachments directory inside user data."""
+    attachments_dir = os.path.join(get_user_data_dir(), "attachments")
+    os.makedirs(attachments_dir, exist_ok=True)
+    return attachments_dir
+
 def get_config_path() -> str:
     """Return the path to the user's config.yaml file."""
     return os.path.join(get_user_data_dir(), "config.yaml")

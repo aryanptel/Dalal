@@ -203,9 +203,9 @@ class BrowserManager:
         except Exception:
             return False
 
-    def send_organic_prompt(self, platform: str, text: str) -> None:
+    def send_organic_prompt(self, platform: str, text: str, files: Optional[list[str]] = None) -> None:
         """Type a prompt into the platform's input box (thread-safe)."""
-        self._worker.run(self._send_organic_prompt_impl, platform, text)
+        self._worker.run(self._send_organic_prompt_impl, platform, text, files)
 
     def extract_stable_response(self, platform: str) -> str:
         """Wait for model response and extract it (thread-safe)."""
@@ -414,8 +414,8 @@ class BrowserManager:
 
     # ── Organic Prompt Sending (runs on worker thread) ────────────────────────
 
-    def _send_organic_prompt_impl(self, platform_id: str, text: str) -> None:
-        """Type (or paste) a prompt and click send on the given platform tab."""
+    def _send_organic_prompt_impl(self, platform_id: str, text: str, files: Optional[list[str]] = None) -> None:
+        """Type (or paste) a prompt, upload files, and click send on the given platform tab."""
         platform = platform_id.split(":")[0]
         page = self._get_page(platform_id)
         plat = self._platforms[platform]
@@ -439,10 +439,10 @@ class BrowserManager:
         if input_el is None:
             self._status("⚠ Input selector failed. Attempting heuristic fallback...")
             fallback_input, fallback_btn = self._find_input_and_button_fallback(page)
-            if fallback_input and fallback_btn:
-                self._status("⚠ Using heuristic fallback for input and button.")
+            if fallback_input:
+                self._status("⚠ Using heuristic fallback for input.")
                 input_el = fallback_input
-                fallback_used = True
+                fallback_used = True if fallback_btn else False
             else:
                 raise BrowserActionRequired(
                     platform,
@@ -456,6 +456,17 @@ class BrowserManager:
 
         # 3. Clear any existing content
         self._clear_input(page, input_el)
+
+        # 3.5 Attach files natively
+        if files and plat.get("file_input_selector"):
+            try:
+                self._status(f"📎 Uploading {len(files)} file(s)...")
+                valid_files = [f for f in files if os.path.exists(f)]
+                if valid_files:
+                    page.set_input_files(plat["file_input_selector"], valid_files)
+                    time.sleep(2.0) # Give the web app time to process the file upload
+            except Exception as e:
+                self._status(f"⚠ Failed to upload files: {e}")
 
         # 4. Type the message (clipboard paste for long texts or multiline text)
         if len(text) > 500 or "\n" in text:
@@ -619,13 +630,18 @@ class BrowserManager:
     def _find_element(self, page: Page, selector: str, timeout: int = 5000) -> Optional[Locator]:
         """Try each comma-separated CSS selector until one is visible."""
         selectors = [s.strip() for s in selector.split(",")]
-        for sel in selectors:
-            try:
-                locator = page.locator(sel).first
-                locator.wait_for(state="visible", timeout=timeout // len(selectors))
-                return locator
-            except Exception:
-                continue
+        start_time = time.time()
+        timeout_s = timeout / 1000.0
+        
+        while (time.time() - start_time) < timeout_s:
+            for sel in selectors:
+                try:
+                    locator = page.locator(sel).first
+                    if locator.is_visible():
+                        return locator
+                except Exception:
+                    pass
+            time.sleep(0.1)
         return None
 
     def _is_connected_impl(self) -> bool:

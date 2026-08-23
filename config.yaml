@@ -44,6 +44,7 @@ export_directory: "exports"
 platforms:
   chatgpt:
     url: "https://chatgpt.com/"
+    file_input_selector: "input[type='file']"
     # ChatGPT uses a contenteditable div with id prompt-textarea (or ProseMirror)
     input_selector: "div#prompt-textarea, div.ProseMirror, [contenteditable='true'][data-placeholder], textarea[placeholder]"
     stop_button: "[data-testid='stop-button'], button[aria-label='Stop generating'], button[aria-label='Stop']"
@@ -53,6 +54,7 @@ platforms:
 
   claude:
     url: "https://claude.ai/new"
+    file_input_selector: "input[type='file']"
     # Claude uses contenteditable divs, sometimes with ProseMirror
     input_selector: "div[contenteditable='true'].ProseMirror, div[contenteditable='true'], [role='textbox'], fieldset div[contenteditable='true']"
     stop_button: "button[aria-label='Stop Response'], button:has-text('Stop'), button[aria-label='Stop']"
@@ -63,6 +65,7 @@ platforms:
 
   gemini:
     url: "https://gemini.google.com/"
+    file_input_selector: "input[type='file']"
     # Gemini uses a rich-textarea custom element with contenteditable inside
     input_selector: "rich-textarea div[contenteditable='true'], div[contenteditable='true'][aria-label*='prompt'], .ql-editor, div[contenteditable='true']"
     stop_button: "button[aria-label='Stop'], button.stop-button, button:has-text('Stop')"
@@ -72,6 +75,7 @@ platforms:
 
   deepseek:
     url: "https://chat.deepseek.com/"
+    file_input_selector: "input[type='file']"
     # DeepSeek uses a textarea or contenteditable
     input_selector: "textarea#chat-input, textarea[placeholder*='Message'], textarea[placeholder*='message'], div[contenteditable='true'], textarea"
     stop_button: "button:has-text('Stop'), div[class*='stop'], button[aria-label='Stop']"
@@ -81,6 +85,7 @@ platforms:
 
   kimi:
     url: "https://kimi.moonshot.cn/"
+    file_input_selector: "input[type='file']"
     input_selector: "div[contenteditable='true'], textarea"
     stop_button: "button[aria-label*='stop'], button:has-text('Stop')"
     send_button: "div[role='button'][aria-label*='send'], button[aria-label*='send'], div[class*='send'] button"
@@ -89,6 +94,7 @@ platforms:
 
   huggingchat:
     url: "https://huggingface.co/chat/"
+    file_input_selector: "input[type='file']"
     input_selector: "textarea[placeholder*='Ask anything'], textarea"
     stop_button: "button:has-text('Stop generating')"
     send_button: "button[type='submit'], button[aria-label*='Send']"
@@ -97,6 +103,7 @@ platforms:
 
   metaai:
     url: "https://www.meta.ai/"
+    file_input_selector: "input[type='file']"
     input_selector: "textarea[placeholder*='Ask Meta AI'], div[contenteditable='true'], textarea"
     stop_button: "button[aria-label*='Stop'], button:has-text('Stop')"
     send_button: "button[aria-label*='Send'], div[role='button'][aria-label*='Send']"

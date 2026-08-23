@@ -1,33 +1,42 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import copy_metadata
+from PyInstaller.utils.hooks import collect_submodules
 
 datas = [
     ('config.yaml', '.'),
     ('dalal_ai', 'dalal_ai'),
+    ('utils', 'utils'),
 ]
 datas += collect_data_files('streamlit')
 datas += copy_metadata('streamlit')
+datas += collect_data_files('playwright')
 
 # Optionally add Playwright browsers if they should be bundled, but typically Playwright downloads them or they are external.
 # We will just package the app, and Playwright will use the system's browser as configured.
+
+hiddenimports = [
+    'streamlit',
+    'streamlit.runtime.scriptrunner.magic_funcs',
+    'streamlit.runtime.scriptrunner.script_run_context',
+    'yaml',
+    'colorama',
+    'dalal_ai.core',
+    'dalal_ai.browser',
+    'dalal_ai.ui',
+    'utils',
+    'utils.exceptions',
+    'utils.logger',
+    'utils.paths',
+]
+hiddenimports += collect_submodules('playwright')
 
 a = Analysis(
     ['run_ui.py'],
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=[
-        'streamlit',
-        'streamlit.runtime.scriptrunner.magic_funcs',
-        'streamlit.runtime.scriptrunner.script_run_context',
-        'playwright',
-        'yaml',
-        'colorama',
-        'dalal_ai.core',
-        'dalal_ai.browser',
-        'dalal_ai.ui'
-    ],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

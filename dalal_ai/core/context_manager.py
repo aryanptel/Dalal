@@ -63,7 +63,7 @@ class ContextManager:
 
     # ── Core Operations ───────────────────────────────────────────────────────
 
-    def add_message(self, role: str, content: str, model: str, flag: Optional[str] = None, swarm_role: Optional[str] = None) -> None:
+    def add_message(self, role: str, content: str, model: str, flag: Optional[str] = None, swarm_role: Optional[str] = None, files: Optional[list[str]] = None) -> None:
         """
         Record a message in the local history.
 
@@ -90,6 +90,7 @@ class ContextManager:
             "model": model,
             "flag": flag,
             "swarm_role": swarm_role,
+            "files": files or [],
             "timestamp": datetime.now().isoformat(),
         })
         self.last_used_model = model

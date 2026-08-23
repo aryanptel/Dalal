@@ -58,6 +58,7 @@ class Orchestrator:
         user_message: str,
         flagged_mgr: Optional[FlaggedContextManager] = None,
         selected_red_ids: Optional[list[int]] = None,
+        files: Optional[list[str]] = None,
     ) -> str:
         """
         Send a message to the specified platform and return the response.
@@ -105,10 +106,14 @@ class Orchestrator:
                     f"🟢 Injecting pending flagged context into {platform}"
                 )
 
+            all_files = list(files) if files else []
             if flagged_mgr:
                 selected = flagged_mgr.build_context(
                     self.context.messages, platform, selected_red_ids
                 )
+                for msg in selected:
+                    if msg.get("files"):
+                        all_files.extend(msg["files"])
             else:
                 selected = []
                 
@@ -120,13 +125,14 @@ class Orchestrator:
             full_prompt = f"{transcript}\n\n**User:** {user_message}" if transcript else user_message
         else:
             full_prompt = user_message
+            all_files = files
 
         try:
-            self.browser.send_organic_prompt(platform, full_prompt)
+            self.browser.send_organic_prompt(platform, full_prompt, files=all_files)
         except RuntimeError as exc:
             raise BrowserActionRequired(platform, str(exc)) from exc
 
-        self.context.add_message("user", user_message, model=platform)
+        self.context.add_message("user", user_message, model=platform, files=files)
 
         try:
             response = self.browser.extract_stable_response(platform)

@@ -107,7 +107,8 @@ class SwarmOrchestrator:
         workers: list[str], 
         flagged_mgr: Optional[FlaggedContextManager] = None,
         selected_red_ids: Optional[list[int]] = None,
-        max_rounds: int = 3
+        max_rounds: int = 3,
+        files: Optional[list[str]] = None
     ) -> Generator[dict[str, Any], None, None]:
         """
         Execute the 4-Phase Swarm Loop.
@@ -137,15 +138,19 @@ class SwarmOrchestrator:
         )
         
         # Build context for moderator if flagged_mgr is provided
+        all_files = list(files) if files else []
         if flagged_mgr:
             selected = flagged_mgr.build_context(self.context.messages, moderator, selected_red_ids)
+            for msg in selected:
+                if msg.get("files"):
+                    all_files.extend(msg["files"])
             transcript = self.context.build_context_transcript(messages=selected)
             if transcript:
                 mod_system = f"{transcript}\n\n{mod_system}"
 
         full_prompt = f"{mod_system}\n\nUSER REQUEST:\n{prompt}"
         
-        self.context.add_message("user", prompt, moderator, flag="green", swarm_role="moderator")
+        self.context.add_message("user", prompt, moderator, flag="green", swarm_role="moderator", files=files)
         
         current_prompt = full_prompt
         round_num = 1
@@ -154,7 +159,10 @@ class SwarmOrchestrator:
             yield {"type": "status", "message": f"Round {round_num}: Waiting for {moderator.capitalize()} (Moderator) plan..."}
             
             # Send to Moderator
-            self.browser.send_organic_prompt(moderator, current_prompt)
+            if round_num == 1:
+                self.browser.send_organic_prompt(moderator, current_prompt, files=all_files)
+            else:
+                self.browser.send_organic_prompt(moderator, current_prompt)
             mod_response = self.browser.extract_stable_response(moderator)
             
             # Phase 2 & 3: Parse and Dispatch

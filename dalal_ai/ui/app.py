@@ -181,6 +181,9 @@ def render_message(index: int, msg: dict[str, Any]) -> None:
             render_flag_controls(index, msg)
             if swarm_role == "worker":
                 st.caption(f"*(Delegated to Swarm Worker)*")
+            if msg.get("files"):
+                for f in msg["files"]:
+                    st.caption(f"📎 Attached: {os.path.basename(f)}")
             st.markdown(content)
     else:
         if swarm_role == "moderator":
@@ -322,6 +325,54 @@ with st.sidebar:
             st.session_state.connected = False
             st.session_state.pending_manual = None
             st.rerun()
+            
+    # Auto-shutdown logic
+    if "auto_shutdown_started" not in st.session_state:
+        st.session_state.auto_shutdown_started = True
+        import threading
+        import time
+        import os
+        
+        def monitor_sessions():
+            try:
+                # Wait for initial connection to settle
+                time.sleep(5)
+                empty_count = 0
+                while True:
+                    time.sleep(2)
+                    try:
+                        from streamlit.runtime import get_instance
+                        runtime = get_instance()
+                        if hasattr(runtime, '_session_mgr'):
+                            sessions = runtime._session_mgr.list_active_sessions()
+                            count = len(sessions)
+                        else:
+                            count = 1 # Fallback if API changes
+                    except Exception:
+                        count = 1
+                        
+                    if count == 0:
+                        empty_count += 1
+                        if empty_count >= 3: # ~6 seconds of 0 active sessions
+                            try:
+                                # Ensure playwright cleans up if we can reach it
+                                if 'browser' in st.session_state and st.session_state.browser:
+                                    st.session_state.browser.disconnect()
+                            except Exception:
+                                pass
+                            os._exit(0)
+                    else:
+                        empty_count = 0
+            except Exception:
+                pass
+                
+        thread = threading.Thread(target=monitor_sessions, daemon=True)
+        try:
+            from streamlit.runtime.scriptrunner import add_script_run_ctx
+            add_script_run_ctx(thread)
+        except Exception:
+            pass
+        thread.start()
 
     st.divider()
 
@@ -566,19 +617,46 @@ if not st.session_state.connected:
     st.info("Connect to your browser using the sidebar to start chatting.")
 else:
     pending_switch = selected != st.session_state.active_model
-    user_input = st.chat_input(
+    
+    prompt = st.chat_input(
         "Type your message…",
+        accept_file="multiple",
         disabled=bool(pending) or pending_switch,
     )
     if pending:
         st.info("Save or clear the pending response before sending another message.")
     elif pending_switch:
         st.info("Confirm the model switch in the sidebar before sending a message.")
-    if user_input:
+    if prompt:
         # Clear any previous error
         st.session_state.last_send_error = ""
 
+        # Streamlit 1.37+ chat_input returns a dict-like object when accept_file is used
+        if isinstance(prompt, str):
+            user_input = prompt
+            uploaded_files = []
+        else:
+            user_input = prompt.text
+            uploaded_files = prompt.files or []
+
+        saved_files = []
+        if uploaded_files:
+            import os
+            from utils.paths import get_attachments_dir
+            attach_dir = get_attachments_dir()
+            for uf in uploaded_files:
+                file_path = os.path.join(attach_dir, uf.name)
+                with open(file_path, "wb") as f:
+                    f.write(uf.getvalue())
+                saved_files.append(file_path)
+
+        if not user_input.strip() and saved_files:
+            user_input = "Please refer to the attached files."
+
         with st.chat_message("user", avatar="👤"):
+            if saved_files:
+                for f in saved_files:
+                    st.caption(f"📎 Attached: {os.path.basename(f)}")
             st.markdown(user_input)
 
         if st.session_state.swarm_mode:
@@ -592,7 +670,8 @@ else:
                             st.session_state.swarm_moderator,
                             workers=st.session_state.swarm_workers,
                             flagged_mgr=st.session_state.flagged_mgr,
-                            selected_red_ids=st.session_state.selected_red_ids
+                            selected_red_ids=st.session_state.selected_red_ids,
+                            files=saved_files
                         ):
                             if update["type"] == "status":
                                 status.update(label=update["message"])
@@ -617,7 +696,8 @@ else:
                             platform,
                             user_input,
                             flagged_mgr=st.session_state.flagged_mgr,
-                            selected_red_ids=st.session_state.selected_red_ids
+                            selected_red_ids=st.session_state.selected_red_ids,
+                            files=saved_files
                         )
                     st.markdown(response)
                     # Clear red flags after successful send
