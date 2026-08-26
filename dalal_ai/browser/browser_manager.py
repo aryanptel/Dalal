@@ -458,15 +458,91 @@ class BrowserManager:
         self._clear_input(page, input_el)
 
         # 3.5 Attach files natively
-        if files and plat.get("file_input_selector"):
-            try:
-                self._status(f"📎 Uploading {len(files)} file(s)...")
-                valid_files = [f for f in files if os.path.exists(f)]
-                if valid_files:
-                    page.set_input_files(plat["file_input_selector"], valid_files)
-                    time.sleep(2.0) # Give the web app time to process the file upload
-            except Exception as e:
-                self._status(f"⚠ Failed to upload files: {e}")
+        if files:
+            valid_files = [f for f in files if os.path.exists(f)]
+            if valid_files:
+                self._status(f"📎 Uploading {len(valid_files)} file(s): {[os.path.basename(f) for f in valid_files]}")
+                upload_success = False
+
+                # Strategy 1: Try existing input[type='file'] elements (if any)
+                if plat.get("file_input_selector"):
+                    try:
+                        inputs = page.locator(plat["file_input_selector"]).all()
+                        if inputs:
+                            self._status(f"   Found {len(inputs)} file input(s), trying set_input_files...")
+                            for file_input in inputs:
+                                try:
+                                    file_input.set_input_files(valid_files)
+                                    upload_success = True
+                                    self._status("   ✅ File attached via hidden input.")
+                                    break
+                                except Exception as e:
+                                    self._status(f"   ⚠ set_input_files failed on element: {e}")
+                                    continue
+                        else:
+                            self._status("   No input[type='file'] elements found on page.")
+                    except Exception as e:
+                        self._status(f"   ⚠ Strategy 1 error: {e}")
+
+                # Strategy 2: Click the attach button and intercept the file chooser dialog
+                if not upload_success:
+                    self._status("   Trying attach button + file chooser interception...")
+                    attach_selectors = [
+                        plat.get("attach_button_selector", ""),
+                        # ChatGPT
+                        "button[aria-label='Attach files']",
+                        "button[aria-label='Upload file']",
+                        "button[data-testid='composer-attach-button']",
+                        # Claude
+                        "button[aria-label='Attach file']",
+                        "button[aria-label='Add content']",
+                        # Gemini
+                        "button[aria-label='Add files']",
+                        # Generic partial matches
+                        "button[aria-label*='ttach']",
+                        "button[aria-label*='pload']",
+                    ]
+                    attach_selectors = [s for s in attach_selectors if s]
+
+                    for selector in attach_selectors:
+                        try:
+                            attach_btn = page.locator(selector).first
+                            if attach_btn.count() == 0:
+                                continue
+                            self._status(f"   Found attach button: {selector}, clicking...")
+                            with page.expect_file_chooser(timeout=5000) as fc_info:
+                                attach_btn.click(timeout=3000)
+                            file_chooser = fc_info.value
+                            file_chooser.set_files(valid_files)
+                            upload_success = True
+                            self._status("   ✅ File attached via file chooser dialog.")
+                            break
+                        except Exception as e:
+                            self._status(f"   ⚠ Selector '{selector}' failed: {e}")
+                            continue
+
+                if upload_success:
+                    time.sleep(2.5)  # Give the web app time to process the file upload
+                else:
+                    # Final fallback: read file contents and paste them into the prompt
+                    self._status("⚠ Native file upload failed. Injecting file contents into prompt text.")
+                    file_text_parts = []
+                    for fpath in valid_files:
+                        fname = os.path.basename(fpath)
+                        try:
+                            with open(fpath, "r", encoding="utf-8", errors="replace") as fh:
+                                content = fh.read()
+                            if len(content) > 100000:
+                                content = content[:100000] + "\n\n... [File truncated at 100,000 characters] ..."
+                            file_text_parts.append(
+                                f"\n\n--- Attached File: {fname} ---\n```\n{content}\n```"
+                            )
+                            self._status(f"   📄 Read {fname} ({len(content)} chars)")
+                        except Exception as e:
+                            self._status(f"   ⚠ Could not read {fname}: {e}")
+                    if file_text_parts:
+                        text = text + "\n".join(file_text_parts)
+                        self._status(f"   ✅ File contents appended to prompt ({len(text)} total chars).")
 
         # 4. Type the message (clipboard paste for long texts or multiline text)
         if len(text) > 500 or "\n" in text:

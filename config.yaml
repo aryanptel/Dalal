@@ -45,6 +45,7 @@ platforms:
   chatgpt:
     url: "https://chatgpt.com/"
     file_input_selector: "input[type='file']"
+    attach_button_selector: "button[aria-label='Attach files'], button[data-testid='composer-attach-button'], button[aria-label='Upload file']"
     # ChatGPT uses a contenteditable div with id prompt-textarea (or ProseMirror)
     input_selector: "div#prompt-textarea, div.ProseMirror, [contenteditable='true'][data-placeholder], textarea[placeholder]"
     stop_button: "[data-testid='stop-button'], button[aria-label='Stop generating'], button[aria-label='Stop']"
@@ -55,6 +56,7 @@ platforms:
   claude:
     url: "https://claude.ai/new"
     file_input_selector: "input[type='file']"
+    attach_button_selector: "button[aria-label='Attach file'], button[aria-label='Add content'], button[aria-label='Attach files']"
     # Claude uses contenteditable divs, sometimes with ProseMirror
     input_selector: "div[contenteditable='true'].ProseMirror, div[contenteditable='true'], [role='textbox'], fieldset div[contenteditable='true']"
     stop_button: "button[aria-label='Stop Response'], button:has-text('Stop'), button[aria-label='Stop']"
@@ -66,6 +68,7 @@ platforms:
   gemini:
     url: "https://gemini.google.com/"
     file_input_selector: "input[type='file']"
+    attach_button_selector: "button[aria-label='Add files'], button[aria-label='Upload file'], button[aria-label='Add image']"
     # Gemini uses a rich-textarea custom element with contenteditable inside
     input_selector: "rich-textarea div[contenteditable='true'], div[contenteditable='true'][aria-label*='prompt'], .ql-editor, div[contenteditable='true']"
     stop_button: "button[aria-label='Stop'], button.stop-button, button:has-text('Stop')"
@@ -76,6 +79,7 @@ platforms:
   deepseek:
     url: "https://chat.deepseek.com/"
     file_input_selector: "input[type='file']"
+    attach_button_selector: "button[aria-label='Upload file'], div[class*='upload'] button"
     # DeepSeek uses a textarea or contenteditable
     input_selector: "textarea#chat-input, textarea[placeholder*='Message'], textarea[placeholder*='message'], div[contenteditable='true'], textarea"
     stop_button: "button:has-text('Stop'), div[class*='stop'], button[aria-label='Stop']"

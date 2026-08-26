@@ -19,6 +19,7 @@ Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
 OutputDir=..\release
+SetupIconFile=..\icon.ico
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
