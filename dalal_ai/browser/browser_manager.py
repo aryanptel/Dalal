@@ -365,9 +365,23 @@ class BrowserManager:
             else self._browser_conf.get("user_data_dir_windows", r"C:\selenium\AutomationProfile")
         )
 
+        # A brand-new profile directory means a brand-new browser with none of
+        # the user's logins. Saying so here saves them guessing why every
+        # platform reports "cannot find the input box".
+        profile_is_new = not os.path.isdir(data_dir or "")
+
         cmd = [exe, f"--remote-debugging-port={port}", f"--user-data-dir={data_dir}"]
         self._status(f"🚀 Launching {self._browser_name.capitalize()}...")
         self._status(f"   {exe}")
+        if profile_is_new:
+            self._status(
+                "🆕 First run: this opens a SEPARATE browser profile, so your "
+                "normal logins do not carry over."
+            )
+            self._status(
+                "   Sign in to each AI site once in the window that just "
+                "opened, then come back here."
+            )
 
         try:
             if IS_WIN:
@@ -458,17 +472,54 @@ class BrowserManager:
         if force_platform and force_platform in self._platforms:
             target_url = self._platforms[force_platform]["url"]
             while len(self._pages[force_platform]) < required_count:
-                try:
-                    new_page = self._context.new_page()
-                    # "load", not "domcontentloaded": these are React apps, and
-                    # domcontentloaded fires while the composer is still a
-                    # placeholder, which is how automation ends up typing into
-                    # a pre-hydration decoy element.
-                    new_page.goto(target_url, wait_until="load", timeout=30000)
-                    self._pages[force_platform].append(new_page)
-                except Exception as exc:
-                    self._status(f"⚠ Could not open tab for {force_platform}: {exc}")
+                page = self._open_platform_tab(force_platform, target_url)
+                if page is None:
                     break
+                self._pages[force_platform].append(page)
+
+    def _open_platform_tab(self, platform: str, target_url: str) -> Optional[Page]:
+        """
+        Open one tab for *platform*, tolerating a slow first load.
+
+        ``wait_until="commit"`` returns as soon as the server responds, rather
+        than waiting for every subresource.  Waiting for ``"load"`` looked safer
+        and was not: these chat apps hold long-lived streaming and telemetry
+        connections open, so the load event can simply never fire, and a fresh
+        machine hit "Page.goto: Timeout 30000ms exceeded" and got no tab at all.
+        Composer readiness is established later anyway, by the hit-tested,
+        priority-ordered search in :meth:`_find_element`.
+
+        A navigation that times out is also not the same as one that failed: the
+        page usually keeps loading.  If it landed on the right domain it is kept
+        instead of being thrown away, which previously left an orphan tab behind
+        on every retry.
+        """
+        loadTimeout_s = float(self._timing.get("page_load_timeout_s", 45))
+        page: Optional[Page] = None
+        try:
+            page = self._context.new_page()
+            page.goto(target_url, wait_until="commit", timeout=loadTimeout_s * 1000)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=loadTimeout_s * 1000)
+            except Exception:
+                self._status(
+                    f"⚠ {platform} is still loading; continuing anyway."
+                )
+            return page
+        except Exception as exc:
+            if page is not None:
+                try:
+                    if not page.is_closed() and self._urls_match(page.url, target_url):
+                        self._status(
+                            f"⚠ {platform} was slow to load but the tab is open; using it."
+                        )
+                        return page
+                    page.close()
+                except Exception:
+                    pass
+            first_line = str(exc).strip().splitlines()[0] if str(exc).strip() else str(exc)
+            self._status(f"⚠ Could not open tab for {platform}: {first_line}")
+            return None
 
     def _live_pages(self) -> list[Page]:
         """
@@ -590,13 +641,23 @@ class BrowserManager:
                 input_el = None
 
         if input_el is None:
+            if self._looks_signed_out(page):
+                raise BrowserActionRequired(
+                    platform,
+                    f"🔑 You are not signed in to {platform}.\n"
+                    f"   This app drives its own browser profile, separate from "
+                    f"your normal browser, so your existing logins do not carry "
+                    f"over.\n"
+                    f"   Sign in to {platform} in the browser window this app "
+                    f"opened, then send your message again."
+                )
             raise BrowserActionRequired(
                 platform,
                 f"❌ Cannot find the input box for {platform}.\n"
                 f"   Selector: {plat['input_selector']}\n"
-                f"   The page may still be loading, an overlay (login prompt, "
-                f"cookie banner, dialog) may be covering the composer, or the "
-                f"platform UI has changed. Check the tab manually."
+                f"   The page may still be loading, an overlay (cookie banner, "
+                f"dialog) may be covering the composer, or the platform UI has "
+                f"changed. Check the tab manually."
             )
 
         time.sleep(0.2)
@@ -1055,6 +1116,31 @@ class BrowserManager:
                 self._status(f"⚠ No cleanly clickable match ({detail}); using best visible.")
             return best_visible[1]
         return None
+
+    # A fresh install launches its own browser profile, so none of the AI sites
+    # are signed in yet.  Without this check the user just sees "cannot find the
+    # input box", which is true but useless: there is no composer on a login
+    # page.
+    _AUTH_URL_HINTS = (
+        "/auth/login", "/auth/signin", "/login", "/signin", "/sign-in",
+        "/sign_up", "/signup", "accounts.google.com", "/oauth",
+    )
+    _AUTH_SELECTOR = (
+        "button:has-text('Log in'), button:has-text('Sign in'), "
+        "button:has-text('Log In'), button:has-text('Sign up'), "
+        "a:has-text('Log in'), a:has-text('Sign in'), "
+        "[data-testid='login-button'], [data-testid='signup-button']"
+    )
+
+    def _looks_signed_out(self, page: Page) -> bool:
+        """Whether this tab is showing a sign-in wall rather than a chat."""
+        try:
+            url = (page.url or "").lower()
+        except Exception:
+            return False
+        if any(hint in url for hint in self._AUTH_URL_HINTS):
+            return True
+        return self._is_selector_visible(page, self._AUTH_SELECTOR)
 
     @staticmethod
     def _is_focused(element: Locator) -> bool:

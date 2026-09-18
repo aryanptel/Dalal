@@ -8,7 +8,7 @@
 # from the bundled file, keeping your own browser/timing settings and saving a
 # backup of the old file. Without this, a selector fix shipped in a new build
 # would never reach anyone who had already run the app once.
-config_version: 3
+config_version: 4
 
 browser:
   # Which browser to use: "edge" or "brave"
@@ -44,6 +44,10 @@ timing:
   max_response_wait_s: 360     # hard timeout waiting for response (6 min)
   post_send_delay_s: 1.0       # pause after clicking send before polling
   network_idle_timeout_s: 2.0  # wait for network to idle after generation
+  # Opening a brand-new tab for a platform. Navigation returns as soon as the
+  # server responds; this is the ceiling for that plus the DOM being parsed.
+  # A slow first load no longer discards the tab.
+  page_load_timeout_s: 45
 
 # Cross-model context injection
 context:
