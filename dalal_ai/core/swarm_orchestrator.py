@@ -4,6 +4,7 @@ from typing import Generator, Any, Optional
 
 from dalal_ai.browser.browser_manager import BrowserManager
 from dalal_ai.core.context_manager import ContextManager
+from dalal_ai.core.document_extractor import prepare_attachments
 from dalal_ai.core.flagged_context_manager import FlaggedContextManager
 from utils.logger import logger
 
@@ -45,9 +46,24 @@ MAX_SUBTASKS_PER_ROUND = 8
 
 
 class SwarmOrchestrator:
-    def __init__(self, browser_manager: BrowserManager, context_manager: ContextManager):
+    def __init__(
+        self,
+        browser_manager: BrowserManager,
+        context_manager: ContextManager,
+        config: Optional[dict[str, Any]] = None,
+    ):
         self.browser = browser_manager
         self.context = context_manager
+        self.config = config or {}
+
+    def _attachment_char_cap(self) -> Optional[int]:
+        """Per-file character ceiling from config; None disables capping."""
+        cap = (self.config.get("attachments") or {}).get("max_chars_per_file")
+        try:
+            cap = int(cap)
+        except (TypeError, ValueError):
+            return None
+        return cap if cap > 0 else None
 
     def _record(
         self, content: str, model: str, swarm_role: str, role: str = "assistant"
@@ -225,7 +241,8 @@ class SwarmOrchestrator:
         flagged_mgr: Optional[FlaggedContextManager] = None,
         selected_red_ids: Optional[list[int]] = None,
         max_rounds: int = 3,
-        files: Optional[list[str]] = None
+        files: Optional[list[str]] = None,
+        page_ranges: Optional[dict[str, tuple[int, int]]] = None,
     ) -> Generator[dict[str, Any], None, None]:
         """
         Execute the 4-Phase Swarm Loop.
@@ -269,7 +286,17 @@ class SwarmOrchestrator:
             if transcript:
                 mod_system = f"{transcript}\n\n{mod_system}"
 
+        # One plan, reused for every tab: extraction is cached, so a 300-page
+        # PDF is parsed once no matter how many workers receive it.
+        attachment_plan = prepare_attachments(
+            all_files,
+            max_chars=self._attachment_char_cap(),
+            page_ranges=page_ranges,
+        )
+
         full_prompt = f"{mod_system}\n\nUSER REQUEST:\n{prompt}"
+        if attachment_plan.inline_suffix:
+            full_prompt += attachment_plan.inline_suffix
         
         self.context.add_message("user", prompt, moderator, flag="green", swarm_role="moderator", files=files)
         
@@ -282,7 +309,12 @@ class SwarmOrchestrator:
             
             # Send to Moderator
             if round_num == 1:
-                self.browser.send_organic_prompt(moderator, current_prompt, files=all_files)
+                self.browser.send_organic_prompt(
+                    moderator,
+                    current_prompt,
+                    files=attachment_plan.native_paths,
+                    file_texts=attachment_plan.fallback_text,
+                )
                 if flagged_mgr and moderator_context:
                     flagged_mgr.commit_delivery(
                         self.context.messages, moderator, moderator_context
@@ -342,6 +374,13 @@ class SwarmOrchestrator:
                     if transcript:
                         worker_prompt = f"{transcript}\n\n**Swarm Task:**\n{worker_prompt}"
 
+                # Workers used to receive nothing but task text — the attachment
+                # went to the moderator alone, so "have three models read this
+                # paper" could not work. They get the same documents now, on the
+                # round where the documents were supplied.
+                if round_num == 1 and attachment_plan.has_attachments:
+                    worker_prompt += attachment_plan.inline_suffix
+
                 worker_prompts.append(worker_prompt)
                 pending_context.append(selected)
                 self._record(worker_prompt, tab, "worker", role="user")
@@ -355,8 +394,17 @@ class SwarmOrchestrator:
                         "type": "status",
                         "message": f"Round {round_num}: wave {wave_no} — {len(wave)} worker(s) running...",
                     }
+                worker_files = (
+                    attachment_plan.native_paths if round_num == 1 else []
+                )
+                worker_fallback = (
+                    attachment_plan.fallback_text if round_num == 1 else ""
+                )
                 failures = self.browser.send_prompts_batch(
-                    [(assigned[i], worker_prompts[i]) for i in wave]
+                    [
+                        (assigned[i], worker_prompts[i], worker_files, worker_fallback)
+                        for i in wave
+                    ]
                 ) or {}
 
                 live = [i for i in wave if assigned[i] not in failures]

@@ -14,16 +14,24 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
+import hashlib
+
 import streamlit as st
 import yaml
 
 from dalal_ai.browser.browser_manager import BrowserManager
 from dalal_ai.core.context_manager import ContextManager
+from dalal_ai.core.document_extractor import (
+    attachment_digest, extract_document_cached, safe_attachment_name,
+)
 from dalal_ai.core.flagged_context_manager import FlaggedContextManager
 from dalal_ai.core.orchestrator import Orchestrator
 from dalal_ai.core.swarm_orchestrator import SwarmOrchestrator
 from utils.exceptions import BrowserActionRequired, ResponseCaptureTimeout
-from utils.paths import get_config_path, get_history_path, init_user_data, get_user_data_dir
+from utils.paths import (
+    get_attachments_dir, get_config_path, get_history_path, init_user_data,
+    get_user_data_dir,
+)
 from utils.logger import logger
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -95,6 +103,7 @@ def init_session_state(config: dict[str, Any]) -> None:
     st.session_state.swarm_moderator = "chatgpt"
     st.session_state.swarm_workers = []
     st.session_state.retry_action = None
+    st.session_state.pending_attachment_review = None
     st.session_state.initialized = True
 
 
@@ -123,6 +132,7 @@ def connect_browser() -> None:
         st.session_state.swarm_orchestrator = SwarmOrchestrator(
             browser,
             st.session_state.context,
+            config,
         )
         st.session_state.connected = True
         st.session_state.connection_error = ""
@@ -135,6 +145,69 @@ def connect_browser() -> None:
         st.session_state.connection_error = str(exc)
         _SHUTDOWN_HOOKS.pop("browser", None)
         logger.error(f"Failed to connect browser: {exc}")
+
+
+def attachment_char_cap() -> Optional[int]:
+    """Per-file character ceiling from config; None means no cap."""
+    cap = (st.session_state.config.get("attachments") or {}).get("max_chars_per_file")
+    try:
+        cap = int(cap)
+    except (TypeError, ValueError):
+        return None
+    return cap if cap > 0 else None
+
+
+def save_uploaded_files(uploaded_files: list[Any]) -> list[str]:
+    """
+    Persist uploads under a content-addressed name.
+
+    The previous scheme wrote to ``<attachments>/<original name>``, so two
+    different files called ``paper.pdf`` overwrote one another and a path
+    already recorded in history silently started pointing at different content.
+    Hashing also means re-attaching the same document reuses its cached
+    extraction instead of re-parsing it.
+    """
+    attach_dir = get_attachments_dir()
+    saved: list[str] = []
+    for uploaded in uploaded_files:
+        payload = uploaded.getvalue()
+        digest = hashlib.sha1(payload).hexdigest()[:10]
+        safe_name = safe_attachment_name(uploaded.name)
+        file_path = os.path.join(attach_dir, f"{digest}_{safe_name}")
+        if not os.path.exists(file_path):
+            with open(file_path, "wb") as fh:
+                fh.write(payload)
+        saved.append(file_path)
+    return saved
+
+
+def extract_uploads(paths: list[str]) -> list[Any]:
+    """Read every attachment once, up front, so problems surface before sending."""
+    documents = []
+    for path in paths:
+        documents.append(extract_document_cached(path, max_chars=None))
+    return documents
+
+
+def render_attachment_notes(documents: list[Any]) -> None:
+    """Show per-file extraction results, warnings and refusals."""
+    for doc in documents:
+        if doc.error:
+            st.warning(f"📎 {doc.name}: {doc.error}")
+            continue
+        st.caption(f"📎 {doc.summary()}")
+        for warning in doc.warnings:
+            st.warning(f"📎 {doc.name}: {warning}")
+
+
+def oversized_documents(documents: list[Any], cap: Optional[int]) -> list[Any]:
+    """Documents whose text exceeds the cap and can be narrowed by page."""
+    if not cap:
+        return []
+    return [
+        doc for doc in documents
+        if doc.has_text and doc.char_count > cap and doc.page_count > 1
+    ]
 
 
 def render_model_badge(model: str) -> str:
@@ -574,6 +647,121 @@ if st.session_state.get("retry_action"):
             except Exception as exc:
                 st.error(f"Retry failed: {exc}")
 
+def execute_send(
+    user_input: str,
+    saved_files: list[str],
+    page_ranges: Optional[dict[str, tuple[int, int]]] = None,
+) -> None:
+    """
+    Run one turn, in swarm mode or single-model mode.
+
+    Pulled out of the chat-input branch so the attachment review panel can
+    call it on a later rerun, once the user has chosen a page range.
+    """
+    page_ranges = page_ranges or {}
+    if st.session_state.swarm_mode:
+        with st.chat_message("assistant", avatar="🐝"):
+            st.markdown(f"**Swarm Mode:** {render_model_badge(st.session_state.swarm_moderator)} is moderating.", unsafe_allow_html=True)
+            success = False
+            final_answer = None
+            try:
+                with st.status("Swarm active... Delegating to workers.", expanded=True) as status:
+                    for update in st.session_state.swarm_orchestrator.execute_swarm_task(
+                        user_input, 
+                        st.session_state.swarm_moderator,
+                        workers=st.session_state.swarm_workers,
+                        flagged_mgr=st.session_state.flagged_mgr,
+                        selected_red_ids=st.session_state.selected_red_ids,
+                        files=saved_files,
+                        page_ranges=page_ranges,
+                    ):
+                        if update["type"] == "status":
+                            status.update(label=update["message"])
+                            st.write(update["message"])
+                        elif update["type"] == "complete":
+                            status.update(label="Swarm Task Complete!", state="complete")
+                            final_answer = update["answer"]
+                if final_answer is None:
+                    # The generator ended without a "complete" update — say so
+                    # rather than raising NameError on an unbound variable.
+                    st.warning(
+                        "The swarm stopped before producing a final answer. "
+                        "Check the activity log and the moderator tab."
+                    )
+                else:
+                    st.markdown(final_answer)
+                    st.session_state.selected_red_ids = []
+                    success = True
+            except Exception as exc:
+                import traceback
+                logger.error(f"Swarm execution failed: {traceback.format_exc()}")
+                st.error(f"Swarm execution failed: {exc}")
+    else:
+        with st.chat_message("assistant", avatar="🤖"):
+            platform = st.session_state.active_model
+            st.markdown(render_model_badge(platform), unsafe_allow_html=True)
+
+            success = False
+            try:
+                with st.spinner(f"Sending to {PLATFORM_LABELS.get(platform, platform)}… (watch the browser tab)"):
+                    response = st.session_state.orchestrator.send_message(
+                        platform,
+                        user_input,
+                        flagged_mgr=st.session_state.flagged_mgr,
+                        selected_red_ids=st.session_state.selected_red_ids,
+                        files=saved_files,
+                        page_ranges=page_ranges,
+                    )
+                st.markdown(response)
+                # Clear red flags after successful send
+                st.session_state.selected_red_ids = []
+                success = True
+
+            except BrowserActionRequired as exc:
+                st.session_state.pending_manual = {
+                    "platform": platform,
+                    "user_message": user_input,
+                    "user_already_sent": False,
+                    "message": (
+                        f"**Browser action needed** — {exc.detail}\n\n"
+                        "Complete the step in the browser tab, then paste the response below."
+                    ),
+                }
+                st.warning(str(exc))
+                # The paste form is rendered further up the script, so it
+                # only appears after a rerun.
+                st.rerun()
+
+            except ResponseCaptureTimeout as exc:
+                st.session_state.pending_manual = {
+                    "platform": platform,
+                    "user_message": user_input,
+                    "user_already_sent": True,
+                    "message": (
+                        f"**Response capture timed out** — {exc.detail}\n\n"
+                        "Copy the reply from the browser and paste it below."
+                    ),
+                }
+                st.warning(str(exc))
+                st.rerun()
+
+            except Exception as exc:
+                # Persist the error so it survives st.rerun()
+                import traceback
+                error_detail = traceback.format_exc()
+                st.session_state.last_send_error = (
+                    f"❌ **Error sending to {platform}:**\n\n"
+                    f"`{type(exc).__name__}: {exc}`\n\n"
+                    f"<details><summary>Full traceback</summary>\n\n"
+                    f"```\n{error_detail}\n```\n\n</details>"
+                )
+                st.error(f"Error: {exc}")
+
+    # Only rerun on success (to refresh history display)
+    if success:
+        st.rerun()
+
+
 # ── Main chat area ────────────────────────────────────────────────────────────
 st.markdown("### Chat")
 st.caption(
@@ -623,6 +811,76 @@ if pending:
             st.session_state.pending_manual = None
             st.rerun()
 
+# Attachment review: a document exceeded the per-file cap, so ask which pages
+# to send rather than truncating behind the user's back.
+review = st.session_state.get("pending_attachment_review")
+if review:
+    cap = review.get("cap") or 0
+    st.warning(
+        f"{len(review['oversized'])} attachment(s) exceed the "
+        f"{cap:,}-character limit for a single file. Choose what to send."
+    )
+    with st.form("attachment_review_form"):
+        chosen: dict[str, tuple[int, int]] = {}
+        for item in review["oversized"]:
+            st.markdown(
+                f"**{item['name']}** — {item['page_count']} pages, "
+                f"{item['char_count']:,} characters"
+            )
+            mode = st.radio(
+                "What should be sent?",
+                ["First pages that fit", "Whole document", "Page range"],
+                key=f"mode_{item['path']}",
+                horizontal=True,
+            )
+            if mode == "First pages that fit":
+                chosen[item["path"]] = (1, item["suggested_pages"])
+                st.caption(
+                    f"Sends pages 1–{item['suggested_pages']} of {item['page_count']}."
+                )
+            elif mode == "Page range":
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    first = st.number_input(
+                        "First page", min_value=1, max_value=item["page_count"],
+                        value=1, key=f"first_{item['path']}",
+                    )
+                with col_b:
+                    last = st.number_input(
+                        "Last page", min_value=1, max_value=item["page_count"],
+                        value=min(item["suggested_pages"], item["page_count"]),
+                        key=f"last_{item['path']}",
+                    )
+                chosen[item["path"]] = (int(first), int(last))
+            else:
+                chosen[item["path"]] = (1, item["page_count"])
+                st.caption(
+                    "Sends everything. The platform may refuse or silently "
+                    "truncate a prompt this large."
+                )
+            with st.expander(f"Preview the start of {item['name']}"):
+                st.text(item["preview"])
+            st.divider()
+
+        col_send, col_cancel = st.columns(2)
+        with col_send:
+            confirmed = st.form_submit_button("Send", type="primary", use_container_width=True)
+        with col_cancel:
+            cancelled = st.form_submit_button("Cancel", use_container_width=True)
+
+    if cancelled:
+        st.session_state.pending_attachment_review = None
+        st.rerun()
+    elif confirmed:
+        pending_review = st.session_state.pending_attachment_review
+        st.session_state.pending_attachment_review = None
+        with st.chat_message("user", avatar="👤"):
+            st.markdown(pending_review["user_input"])
+        execute_send(
+            pending_review["user_input"], pending_review["files"], chosen
+        )
+        st.rerun()
+
 # Show persistent error if one exists from a previous send attempt
 if "last_send_error" in st.session_state and st.session_state.last_send_error:
     st.error(st.session_state.last_send_error)
@@ -639,8 +897,10 @@ else:
     prompt = st.chat_input(
         "Type your message…",
         accept_file="multiple",
-        disabled=bool(pending) or pending_switch,
+        disabled=bool(pending) or pending_switch or bool(review),
     )
+    if review:
+        st.info("Choose what to send from the oversized attachment(s) above.")
     if pending:
         st.info("Save or clear the pending response before sending another message.")
     elif pending_switch:
@@ -658,124 +918,50 @@ else:
             uploaded_files = prompt.files or []
 
         saved_files = []
+        documents = []
         if uploaded_files:
-            import os
-            from utils.paths import get_attachments_dir
-            attach_dir = get_attachments_dir()
-            for uf in uploaded_files:
-                file_path = os.path.join(attach_dir, uf.name)
-                with open(file_path, "wb") as f:
-                    f.write(uf.getvalue())
-                saved_files.append(file_path)
+            saved_files = save_uploaded_files(uploaded_files)
+            with st.spinner("Reading attachments…"):
+                documents = extract_uploads(saved_files)
 
         if not user_input.strip() and saved_files:
             user_input = "Please refer to the attached files."
 
         with st.chat_message("user", avatar="👤"):
-            if saved_files:
+            if documents:
+                render_attachment_notes(documents)
+            elif saved_files:
                 for f in saved_files:
                     st.caption(f"📎 Attached: {os.path.basename(f)}")
             st.markdown(user_input)
 
-        if st.session_state.swarm_mode:
-            with st.chat_message("assistant", avatar="🐝"):
-                st.markdown(f"**Swarm Mode:** {render_model_badge(st.session_state.swarm_moderator)} is moderating.", unsafe_allow_html=True)
-                success = False
-                final_answer = None
-                try:
-                    with st.status("Swarm active... Delegating to workers.", expanded=True) as status:
-                        for update in st.session_state.swarm_orchestrator.execute_swarm_task(
-                            user_input, 
-                            st.session_state.swarm_moderator,
-                            workers=st.session_state.swarm_workers,
-                            flagged_mgr=st.session_state.flagged_mgr,
-                            selected_red_ids=st.session_state.selected_red_ids,
-                            files=saved_files
-                        ):
-                            if update["type"] == "status":
-                                status.update(label=update["message"])
-                                st.write(update["message"])
-                            elif update["type"] == "complete":
-                                status.update(label="Swarm Task Complete!", state="complete")
-                                final_answer = update["answer"]
-                    if final_answer is None:
-                        # The generator ended without a "complete" update — say so
-                        # rather than raising NameError on an unbound variable.
-                        st.warning(
-                            "The swarm stopped before producing a final answer. "
-                            "Check the activity log and the moderator tab."
-                        )
-                    else:
-                        st.markdown(final_answer)
-                        st.session_state.selected_red_ids = []
-                        success = True
-                except Exception as exc:
-                    import traceback
-                    logger.error(f"Swarm execution failed: {traceback.format_exc()}")
-                    st.error(f"Swarm execution failed: {exc}")
-        else:
-            with st.chat_message("assistant", avatar="🤖"):
-                platform = st.session_state.active_model
-                st.markdown(render_model_badge(platform), unsafe_allow_html=True)
-
-                success = False
-                try:
-                    with st.spinner(f"Sending to {PLATFORM_LABELS.get(platform, platform)}… (watch the browser tab)"):
-                        response = st.session_state.orchestrator.send_message(
-                            platform,
-                            user_input,
-                            flagged_mgr=st.session_state.flagged_mgr,
-                            selected_red_ids=st.session_state.selected_red_ids,
-                            files=saved_files
-                        )
-                    st.markdown(response)
-                    # Clear red flags after successful send
-                    st.session_state.selected_red_ids = []
-                    success = True
-
-                except BrowserActionRequired as exc:
-                    st.session_state.pending_manual = {
-                        "platform": platform,
-                        "user_message": user_input,
-                        "user_already_sent": False,
-                        "message": (
-                            f"**Browser action needed** — {exc.detail}\n\n"
-                            "Complete the step in the browser tab, then paste the response below."
+        # A document larger than the cap is never silently trimmed. Stash the
+        # turn and ask which pages to send; the review panel re-enters
+        # execute_send on the next rerun.
+        cap = attachment_char_cap()
+        oversized = oversized_documents(documents, cap)
+        if oversized:
+            st.session_state.pending_attachment_review = {
+                "user_input": user_input,
+                "files": saved_files,
+                "cap": cap,
+                "oversized": [
+                    {
+                        "path": doc.path,
+                        "name": doc.name,
+                        "page_count": doc.page_count,
+                        "char_count": doc.char_count,
+                        "preview": doc.text[:500],
+                        "suggested_pages": max(
+                            1, int(doc.page_count * cap / max(doc.char_count, 1))
                         ),
                     }
-                    st.warning(str(exc))
-                    # The paste form is rendered further up the script, so it
-                    # only appears after a rerun.
-                    st.rerun()
-
-                except ResponseCaptureTimeout as exc:
-                    st.session_state.pending_manual = {
-                        "platform": platform,
-                        "user_message": user_input,
-                        "user_already_sent": True,
-                        "message": (
-                            f"**Response capture timed out** — {exc.detail}\n\n"
-                            "Copy the reply from the browser and paste it below."
-                        ),
-                    }
-                    st.warning(str(exc))
-                    st.rerun()
-
-                except Exception as exc:
-                    # Persist the error so it survives st.rerun()
-                    import traceback
-                    error_detail = traceback.format_exc()
-                    st.session_state.last_send_error = (
-                        f"❌ **Error sending to {platform}:**\n\n"
-                        f"`{type(exc).__name__}: {exc}`\n\n"
-                        f"<details><summary>Full traceback</summary>\n\n"
-                        f"```\n{error_detail}\n```\n\n</details>"
-                    )
-                    st.error(f"Error: {exc}")
-
-        # Only rerun on success (to refresh history display)
-        if success:
+                    for doc in oversized
+                ],
+            }
             st.rerun()
+
+        execute_send(user_input, saved_files, None)
 
 # Show latest status log in expander (useful during long waits)
 status_log = st.session_state.get("status_log", [])

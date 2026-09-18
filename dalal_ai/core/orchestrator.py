@@ -12,6 +12,7 @@ from typing import Any, Callable, Optional
 
 from dalal_ai.browser.browser_manager import BrowserManager
 from dalal_ai.core.context_manager import ContextManager
+from dalal_ai.core.document_extractor import prepare_attachments
 from dalal_ai.core.flagged_context_manager import FlaggedContextManager
 from utils.exceptions import BrowserActionRequired, ResponseCaptureTimeout
 
@@ -45,7 +46,17 @@ class Orchestrator:
         self.context = context
         self.config = config
         self._platforms: dict[str, dict] = config["platforms"]
+        self._attachments: dict[str, Any] = config.get("attachments", {}) or {}
         self._on_status = on_status
+
+    def _attachment_char_cap(self) -> Optional[int]:
+        """Per-file character ceiling from config; None disables capping."""
+        cap = self._attachments.get("max_chars_per_file")
+        try:
+            cap = int(cap)
+        except (TypeError, ValueError):
+            return None
+        return cap if cap > 0 else None
 
     def _status(self, message: str) -> None:
         """Emit a progress message to the registered callback."""
@@ -59,6 +70,7 @@ class Orchestrator:
         flagged_mgr: Optional[FlaggedContextManager] = None,
         selected_red_ids: Optional[list[int]] = None,
         files: Optional[list[str]] = None,
+        page_ranges: Optional[dict[str, tuple[int, int]]] = None,
     ) -> str:
         """
         Send a message to the specified platform and return the response.
@@ -77,6 +89,11 @@ class Orchestrator:
             The manager handling the red/green flag filtering.
         selected_red_ids : list[int], optional
             The indices of red-flagged messages explicitly selected by the user.
+        files : list[str], optional
+            Attachment paths to send with this message.
+        page_ranges : dict[str, tuple[int, int]], optional
+            Per-path 1-based inclusive page ranges, set by the UI when a
+            document is too large to send whole.
 
         Returns
         -------
@@ -131,8 +148,27 @@ class Orchestrator:
             full_prompt = user_message
             all_files = list(files) if files else []
 
+        # Read every attachment once, here, and decide how each one travels.
+        # Extraction used to happen inside the browser layer, on the Playwright
+        # thread, with a raw errors="replace" read that turned PDFs and .docx
+        # files into mojibake.
+        plan = prepare_attachments(
+            all_files,
+            max_chars=self._attachment_char_cap(),
+            page_ranges=page_ranges,
+        )
+        for note in plan.notes:
+            self._status(f"📎 {note}")
+        if plan.inline_suffix:
+            full_prompt = full_prompt + plan.inline_suffix
+
         try:
-            self.browser.send_organic_prompt(platform, full_prompt, files=all_files)
+            self.browser.send_organic_prompt(
+                platform,
+                full_prompt,
+                files=plan.native_paths,
+                file_texts=plan.fallback_text,
+            )
         except RuntimeError as exc:
             raise BrowserActionRequired(platform, str(exc)) from exc
 
@@ -143,7 +179,24 @@ class Orchestrator:
             else:
                 flagged_mgr.mark_contacted(platform)
 
-        self.context.add_message("user", user_message, model=platform, files=files)
+        self.context.add_message(
+            "user",
+            user_message,
+            model=platform,
+            files=files,
+            attachments=[
+                {
+                    "name": doc.name,
+                    "path": doc.path,
+                    "format": doc.format,
+                    "pages_sent": doc.pages_included,
+                    "page_count": doc.page_count,
+                    "chars_sent": doc.char_count,
+                    "truncated": doc.truncated,
+                }
+                for doc in plan.documents
+            ] or None,
+        )
 
         try:
             response = self.browser.extract_stable_response(platform)

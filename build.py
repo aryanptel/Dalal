@@ -70,7 +70,9 @@ def verify_build():
     # names as plain text, so scanning the binary for them is a reliable check.
     required_modules = [
         "pyperclip",
+        "pypdf",
         "dalal_ai.browser.browser_manager",
+        "dalal_ai.core.document_extractor",
         "dalal_ai.core.swarm_orchestrator",
         "utils.paths",
         "streamlit.web.cli",

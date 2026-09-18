@@ -63,7 +63,16 @@ class ContextManager:
 
     # ── Core Operations ───────────────────────────────────────────────────────
 
-    def add_message(self, role: str, content: str, model: str, flag: Optional[str] = None, swarm_role: Optional[str] = None, files: Optional[list[str]] = None) -> None:
+    def add_message(
+        self,
+        role: str,
+        content: str,
+        model: str,
+        flag: Optional[str] = None,
+        swarm_role: Optional[str] = None,
+        files: Optional[list[str]] = None,
+        attachments: Optional[list[dict[str, Any]]] = None,
+    ) -> None:
         """
         Record a message in the local history.
 
@@ -74,6 +83,12 @@ class ContextManager:
         model : str   Platform name (chatgpt / claude / gemini)
         flag : Optional[str]  "green", "red", or None
         swarm_role : Optional[str]  "moderator", "worker", or None
+        files : Optional[list[str]]  Attachment paths sent with this message
+        attachments : Optional[list[dict]]
+            What was actually delivered for each attachment — format, pages
+            sent, character count, whether it was truncated. Recorded so a
+            later reader can tell which pages of a long PDF a given model
+            actually saw, rather than only which file was named.
         """
         if role not in {"user", "assistant"}:
             raise ValueError("role must be 'user' or 'assistant'")
@@ -91,6 +106,7 @@ class ContextManager:
             "flag": flag,
             "swarm_role": swarm_role,
             "files": files or [],
+            "attachments": attachments or [],
             "timestamp": datetime.now().isoformat(),
         })
         self.last_used_model = model

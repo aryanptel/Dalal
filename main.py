@@ -45,6 +45,7 @@ except ImportError:
 
 from dalal_ai.browser.browser_manager import BrowserManager
 from dalal_ai.core.context_manager import ContextManager
+from dalal_ai.core.document_extractor import extract_document_cached
 from dalal_ai.core.flagged_context_manager import FlaggedContextManager
 from dalal_ai.core.orchestrator import Orchestrator
 from utils.exceptions import BrowserActionRequired, ResponseCaptureTimeout
@@ -76,6 +77,9 @@ HELP_TEXT = f"""
   {Fore.GREEN}/red [n]{Style.RESET_ALL}    Flag message n (default: last) as on-demand context
   {Fore.GREEN}/unflag [n]{Style.RESET_ALL} Remove the flag from message n (default: last)
   {Fore.GREEN}/flags{Style.RESET_ALL}      List flagged messages
+  {Fore.GREEN}/attach <path>{Style.RESET_ALL} Attach a file to the next message
+  {Fore.GREEN}/attached{Style.RESET_ALL}   List queued attachments
+  {Fore.GREEN}/detach{Style.RESET_ALL}     Clear queued attachments
   {Fore.GREEN}/status{Style.RESET_ALL}     Show session statistics
   {Fore.GREEN}/tabs{Style.RESET_ALL}       List open browser tabs
   {Fore.GREEN}/history{Style.RESET_ALL}    Show recent conversation history
@@ -223,6 +227,12 @@ def main() -> None:
     # Without this the CLI passed flagged_mgr=None, so no context was ever
     # injected on a model switch — the transcript came out empty every time.
     flagged_mgr = FlaggedContextManager()
+    pending_attachments: list[str] = []
+    attachment_cap = (config.get("attachments") or {}).get("max_chars_per_file")
+    try:
+        attachment_cap = int(attachment_cap)
+    except (TypeError, ValueError):
+        attachment_cap = None
 
     # Default to first platform
     active_model = platforms[0]
@@ -275,6 +285,45 @@ def main() -> None:
                 print(f"  {Fore.GREEN}Message [{index}] flag → {label}.{Style.RESET_ALL}")
                 continue
 
+            elif cmd.split()[0] == "/attach":
+                raw = user_input.split(None, 1)
+                if len(raw) < 2:
+                    print(f"  {Fore.RED}Usage: /attach <path to file>{Style.RESET_ALL}")
+                    continue
+                path = os.path.expanduser(raw[1].strip().strip('"').strip("'"))
+                if not os.path.isfile(path):
+                    print(f"  {Fore.RED}No such file: {path}{Style.RESET_ALL}")
+                    continue
+                doc = extract_document_cached(path, max_chars=attachment_cap)
+                if doc.error:
+                    print(f"  {Fore.YELLOW}⚠ {doc.name}: {doc.error}{Style.RESET_ALL}")
+                    print(f"  {Fore.YELLOW}   Queued anyway for native upload.{Style.RESET_ALL}")
+                else:
+                    print(f"  {Fore.GREEN}📎 {doc.summary()}{Style.RESET_ALL}")
+                for warning in doc.warnings:
+                    print(f"  {Fore.YELLOW}   ⚠ {warning}{Style.RESET_ALL}")
+                if doc.truncated:
+                    # No dialog in a terminal: apply the cap and say exactly
+                    # what was left out rather than trimming silently.
+                    print(
+                        f"  {Fore.YELLOW}   Over the {attachment_cap:,}-character "
+                        f"limit — sending {doc.page_span()}.{Style.RESET_ALL}"
+                    )
+                pending_attachments.append(path)
+                continue
+
+            elif cmd == "/attached":
+                if not pending_attachments:
+                    print(f"  {Fore.YELLOW}No attachments queued.{Style.RESET_ALL}")
+                for path in pending_attachments:
+                    print(f"  📎 {os.path.basename(path)}")
+                continue
+
+            elif cmd == "/detach":
+                pending_attachments.clear()
+                print(f"  {Fore.GREEN}Attachments cleared.{Style.RESET_ALL}")
+                continue
+
             elif cmd == "/flags":
                 flagged = [
                     (i, m) for i, m in enumerate(context.messages) if m.get("flag")
@@ -316,8 +365,12 @@ def main() -> None:
 
             try:
                 response = orchestrator.send_message(
-                    active_model, user_input, flagged_mgr=flagged_mgr
+                    active_model,
+                    user_input,
+                    flagged_mgr=flagged_mgr,
+                    files=list(pending_attachments) or None,
                 )
+                pending_attachments.clear()
                 print_response(active_model, response)
             except BrowserActionRequired as exc:
                 print(f"\n  {Fore.YELLOW}⚠ {exc}{Style.RESET_ALL}")

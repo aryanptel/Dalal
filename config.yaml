@@ -8,7 +8,7 @@
 # from the bundled file, keeping your own browser/timing settings and saving a
 # backup of the old file. Without this, a selector fix shipped in a new build
 # would never reach anyone who had already run the app once.
-config_version: 2
+config_version: 3
 
 browser:
   # Which browser to use: "edge" or "brave"
@@ -51,6 +51,16 @@ context:
   # limit; when a limit is set the OLDEST messages are dropped first so the
   # newest turns always survive.
   max_transcript_chars: null
+
+# Attachments
+attachments:
+  # Per-file ceiling on extracted text. A document over this is never trimmed
+  # silently: the UI asks which pages to send, and the CLI applies the cap and
+  # prints exactly which pages went. Roughly 60000 chars is 15 PDF pages.
+  max_chars_per_file: 60000
+  # Cache extracted text in a sidecar next to the stored attachment, so one
+  # document sent to several swarm tabs is parsed once.
+  cache_extractions: true
 
 # Export settings
 export_directory: "exports"

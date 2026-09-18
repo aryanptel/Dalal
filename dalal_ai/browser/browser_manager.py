@@ -209,9 +209,21 @@ class BrowserManager:
         except Exception:
             return False
 
-    def send_organic_prompt(self, platform: str, text: str, files: Optional[list[str]] = None) -> None:
+    def send_organic_prompt(
+        self,
+        platform: str,
+        text: str,
+        files: Optional[list[str]] = None,
+        file_texts: str = "",
+    ) -> None:
         """
         Type a prompt into the platform's input box (thread-safe).
+
+        *file_texts* is the already-extracted content of *files*, appended to the
+        prompt only if the platform's own uploader fails. This layer no longer
+        reads attachments itself: extraction is pure CPU work that has no place
+        on the single Playwright thread, and doing it here re-parsed the same
+        document once per tab.
 
         Any Playwright failure is re-raised as :class:`BrowserActionRequired`.
         A raw Playwright timeout used to escape as a generic exception, so the
@@ -220,7 +232,9 @@ class BrowserManager:
         that fallback exists for.
         """
         try:
-            self._worker.run(self._send_organic_prompt_impl, platform, text, files)
+            self._worker.run(
+                self._send_organic_prompt_impl, platform, text, files, file_texts
+            )
         except (BrowserActionRequired, ConnectionError):
             raise
         except PlaywrightError as exc:
@@ -248,9 +262,13 @@ class BrowserManager:
             self._extract_stable_response_impl, platform, expect_new
         )
 
-    def send_prompts_batch(self, prompts: list[tuple[str, str]]) -> dict[str, str]:
+    def send_prompts_batch(self, prompts: list[tuple]) -> dict[str, str]:
         """
         Type prompts into multiple tabs sequentially (thread-safe).
+
+        Each entry is ``(tab_id, text)``, optionally extended to
+        ``(tab_id, text, files)`` or ``(tab_id, text, files, file_texts)`` so a
+        swarm worker can receive the same attachments as the moderator.
 
         Returns a mapping of tab id → error message for the sends that failed,
         so the caller can tell a silent failure from a slow worker instead of
@@ -258,12 +276,21 @@ class BrowserManager:
         """
         return self._worker.run(self._send_prompts_batch_impl, prompts)
 
-    def _send_prompts_batch_impl(self, prompts: list[tuple[str, str]]) -> dict[str, str]:
+    @staticmethod
+    def _unpack_prompt(entry: tuple) -> tuple[str, str, Optional[list[str]], str]:
+        """Normalise a 2-, 3- or 4-tuple batch entry."""
+        platform_id, text = entry[0], entry[1]
+        files = entry[2] if len(entry) > 2 else None
+        file_texts = entry[3] if len(entry) > 3 else ""
+        return platform_id, text, files, file_texts or ""
+
+    def _send_prompts_batch_impl(self, prompts: list[tuple]) -> dict[str, str]:
         """Sequentially type and send prompts on the Playwright thread."""
         failures: dict[str, str] = {}
-        for platform_id, text in prompts:
+        for entry in prompts:
+            platform_id, text, files, file_texts = self._unpack_prompt(entry)
             try:
-                self._send_organic_prompt_impl(platform_id, text)
+                self._send_organic_prompt_impl(platform_id, text, files, file_texts)
             except Exception as exc:
                 self._status(f"⚠ Failed to send prompt to {platform_id}: {exc}")
                 failures[platform_id] = str(exc)
@@ -505,7 +532,13 @@ class BrowserManager:
 
     # ── Organic Prompt Sending (runs on worker thread) ────────────────────────
 
-    def _send_organic_prompt_impl(self, platform_id: str, text: str, files: Optional[list[str]] = None) -> None:
+    def _send_organic_prompt_impl(
+        self,
+        platform_id: str,
+        text: str,
+        files: Optional[list[str]] = None,
+        file_texts: str = "",
+    ) -> None:
         """Type (or paste) a prompt, upload files, and click send on the given platform tab."""
         platform = platform_id.split(":")[0]
         page = self._get_page(platform_id)
@@ -637,26 +670,22 @@ class BrowserManager:
 
                 if upload_success:
                     time.sleep(2.5)  # Give the web app time to process the file upload
+                elif file_texts:
+                    # Fall back to text the caller extracted properly, rather
+                    # than re-reading the bytes here. The old code opened every
+                    # attachment with errors="replace", which turns a PDF or a
+                    # .docx (a ZIP) into mojibake and pasted it into the model
+                    # as though it were the document.
+                    self._status(
+                        f"⚠ Native upload failed — inlining pre-extracted text "
+                        f"({len(file_texts):,} chars)."
+                    )
+                    text = text + file_texts
                 else:
-                    # Final fallback: read file contents and paste them into the prompt
-                    self._status("⚠ Native file upload failed. Injecting file contents into prompt text.")
-                    file_text_parts = []
-                    for fpath in valid_files:
-                        fname = os.path.basename(fpath)
-                        try:
-                            with open(fpath, "r", encoding="utf-8", errors="replace") as fh:
-                                content = fh.read()
-                            if len(content) > 100000:
-                                content = content[:100000] + "\n\n... [File truncated at 100,000 characters] ..."
-                            file_text_parts.append(
-                                f"\n\n--- Attached File: {fname} ---\n```\n{content}\n```"
-                            )
-                            self._status(f"   📄 Read {fname} ({len(content)} chars)")
-                        except Exception as e:
-                            self._status(f"   ⚠ Could not read {fname}: {e}")
-                    if file_text_parts:
-                        text = text + "\n".join(file_text_parts)
-                        self._status(f"   ✅ File contents appended to prompt ({len(text)} total chars).")
+                    self._status(
+                        "⚠ Native upload failed and no readable text was supplied "
+                        "for these attachments; sending the prompt without them."
+                    )
 
         # 4. Type the message (clipboard paste for long texts or multiline text)
         if len(text) > 500 or "\n" in text:

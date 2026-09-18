@@ -38,3 +38,4 @@ desktop.ini
 # Playwright
 playwright-report/
 test-results/
+release/

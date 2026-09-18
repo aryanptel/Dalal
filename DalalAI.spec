@@ -57,6 +57,9 @@ hiddenimports = [
     # clipboard paste of long prompts.
     'pyperclip',
     'tkinter',
+    # PDF text extraction. Pure Python, no binaries — DOCX deliberately uses
+    # the stdlib instead of python-docx so that lxml stays out of the build.
+    'pypdf',
 ]
 
 # Parse the application's own code so its imports are followed.  Explicit list
@@ -68,6 +71,7 @@ hiddenimports += [
     'dalal_ai.core',
     'dalal_ai.core.context_compressor',
     'dalal_ai.core.context_manager',
+    'dalal_ai.core.document_extractor',
     'dalal_ai.core.flagged_context_manager',
     'dalal_ai.core.orchestrator',
     'dalal_ai.core.swarm_orchestrator',
