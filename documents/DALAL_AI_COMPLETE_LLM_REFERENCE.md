@@ -32,7 +32,9 @@ This document is an exhaustive, self-contained reference guide for Dalal AI. It 
     - `connect()`: Tries to connect to `http://localhost:<port>`. If refused and `auto_launch` is true, spawns a `subprocess.Popen` for Edge/Brave, then connects.
     - `list_open_tabs() -> list[dict]`: Returns active pages.
     - `send_organic_prompt(platform, text)`: Delegates to `_send_organic_prompt_impl`.
-    - `extract_stable_response(platform)`: Delegates to `_extract_stable_response_impl`.
+    - `extract_stable_response(platform, expect_new=True)`: Delegates to `_extract_stable_response_impl`. `expect_new=True` waits for a reply that differs from the snapshot taken just before the prompt was typed. `expect_new=False` re-reads the reply already on screen — used by the UI's retry button, which would otherwise wait out the full `max_response_wait_s` and fail, because a finished reply never looks "new".
+    - `send_prompts_batch(prompts) -> dict[tab_id, error]`: returns the sends that failed.
+    - `extract_responses_batch(tab_ids) -> list[str]`: returns a list **aligned with the input**, not a dict. A dict collapses two sub-tasks dispatched to the same tab and loses one reply.
     - `disconnect()`: Closes contexts and shuts down the worker. Registered with `atexit`.
   - *Exceptions raised:* `ConnectionError` (if browser fails to launch/connect).
 
@@ -48,8 +50,9 @@ This document is an exhaustive, self-contained reference guide for Dalal AI. It 
   - *Public Methods:*
     - `add_message(role: str, content: str, model: str, flag: Optional[str] = None)`: Appends to `messages`, updates `last_used_model`, and calls `_auto_save()`.
     - `update_flag(index: int, new_flag: Optional[str])`: Mutates `messages[index]["flag"]` and calls `_auto_save()`.
-    - `build_context_transcript(max_chars: int, messages: list[dict]) -> str`: Returns a continuous Markdown string of historical messages. Artificial truncation logic was intentionally removed; it always returns the full transcript bypassing `max_chars` to preserve maximum context integrity for complex mathematical or code sessions.
+    - `build_context_transcript(max_chars: Optional[int], messages: list[dict]) -> str`: Returns a continuous Markdown string of historical messages. `max_chars=None` (the default, and what `config.yaml`'s `context.max_transcript_chars` yields when unset) returns the full transcript. When a limit **is** set it is honoured by dropping the oldest messages first — previously the parameter was accepted and ignored, so an oversized transcript was pasted whole and truncated by the platform's own input limit, losing the newest and most relevant turns instead of the oldest.
     - `clear()`: Empties `messages` and saves.
+    - `_auto_save()`: Writes to `chat_history.json.tmp`, fsyncs, then `os.replace`s it into place. The previous in-place write truncated the file first, so a crash mid-save destroyed the whole conversation.
 
 ### 2.4 `dalal_ai/core/flagged_context_manager.py`
 **Responsibility:** Deterministic, stateful context filtering for model switches.
@@ -57,8 +60,11 @@ This document is an exhaustive, self-contained reference guide for Dalal AI. It 
   - *State variables:*
     - `session_delivered: dict[str, set[int]]`: Maps a `target_model` to a set of message indices that have *already been sent* to that model's browser tab.
   - *Public Methods:*
-    - `build_context(chat_history: list[dict], target_model: str, selected_red_ids: list[int]) -> list[dict]`: Executes the core routing logic (see Section 5). Modifies `session_delivered` as a side effect.
-    - `reset_model_context(model_name: str)`: Pops the model from `session_delivered`.
+    - `build_context(chat_history, target_model, selected_red_ids, commit=True) -> list[dict]`: Executes the core routing logic (see Section 5). With `commit=True` it marks the selection delivered immediately; callers that can still fail pass `commit=False` and call `commit_delivery` once the prompt has actually reached the tab. Committing up front loses the context permanently whenever the send then fails.
+    - `commit_delivery(chat_history, target_model, messages)`: Records delivery, matching by object identity so duplicate message text cannot mis-match.
+    - `mark_contacted(model_name)`: Records a successful turn that carried no context.
+    - `reset_model_context(model_name: str)`: Pops the model from `session_delivered` and from `contacted`.
+  - *State variables (cont.):* `contacted: set[str]` — models this session has talked to. Kept separate from `session_delivered` because "first contact" and "has received messages" are different questions: a first switch carrying no green flags delivers nothing, and keying first-contact off an empty set would make every later turn re-send the whole green history.
 
 ### 2.5 `dalal_ai/core/context_compressor.py`
 **Responsibility:** Fallback algorithmic compression when zero manual flags exist.
@@ -85,8 +91,10 @@ This document is an exhaustive, self-contained reference guide for Dalal AI. It 
     - Explicitly reserves the `0` index for the moderator tab (e.g., `deepseek:0`) and maps worker arrays to `platform:1`, `platform:2`, etc. to prevent tab collisions.
     - Uses `flagged_mgr` to compile a full transcript of 🟩 green-flagged messages and prepends this to the System Prompts of BOTH the Moderator and the Workers.
     - Implements the **Two-Mode Protocol**:
-      - **Mode 1 (Delegating):** The Moderator outputs JSON containing sub-tasks. Parses JSON plans via regex fallbacks (employing `codecs.decode(..., 'unicode_escape')` to parse corrupted JSON blocks containing unescaped newline literals). Yields the formatted JSON as part of the `{"type": "status"}` object so Streamlit can render it cleanly in the UI.
-      - **Mode 2 (Final Answer):** The Moderator outputs pure, unwrapped Markdown. The orchestrator catches the ensuing `ValueError` from `_extract_json()` and natively pipelines the raw Markdown directly to the user (bypassing JSON restrictions).
+      - **Parsing (`_parse_moderator_reply`):** returns `("delegate", obj)` **only** when a balanced JSON object has `status == "delegating"` and a non-empty `plan` list; everything else is `("final", markdown)`. Candidate objects come from a brace-balanced scan that skips braces inside string literals, so LaTeX and fenced code samples in a Mode 2 answer are no longer mistaken for a plan. Backslashes that are not legal JSON escapes are doubled before the second parse attempt, which recovers plans containing `\frac` or `C:\Users`.
+      - **Mode 1 (Delegating):** sub-task `agent` fields are snapped onto the real worker tab ids by `_assign_worker_tabs`. A bare platform name (`"deepseek"`) resolves to tab index 0 — the *moderator's own tab* — so an unresolved name used to drop a worker prompt into the moderator's conversation; it now resolves to that platform's first worker tab. Sub-tasks sharing a tab are split into sequential waves by `_split_into_waves`, because two prompts in one tab before either reply is read loses the first reply.
+      - **Mode 2 (Final Answer):** The Moderator outputs pure, unwrapped Markdown, which is the default classification. A moderator that wraps its answer as `{"status": "complete", "answer": "..."}` anyway is unwrapped.
+      - **Exhausted rounds:** the moderator's last reply is persisted and returned rather than discarded.
     - Uses `BrowserManager.send_prompts_batch()` and `BrowserManager.extract_responses_batch()` to execute tasks concurrently on worker tabs.
     - Aggregates results in XML tags (`<worker name="..." role="...">...</worker>`) to inject back into the moderator.
 
@@ -231,13 +239,13 @@ This is prepended to the user's fresh message.
 1. Injects `_RESPONSE_TO_MARKDOWN_SCRIPT` as a global window function.
 2. Loops every `stability_wait_s` seconds (max limit `max_response_wait_s`).
 3. Executes the injected JS on the LAST element matching `response_selector`.
-4. If the returned Markdown string is identical to the previous loop's string, increments `stable_count`.
-5. If the string changes, `stable_count = 0`.
-6. Checks if the `stop_button` is present (meaning generation is definitely ongoing). If present, `stable_count = 0`.
-7. Once `stable_count >= stability_samples`, the loop breaks, returning the final Markdown string.
+4. Tracks how long the extracted Markdown has been byte-identical (`quietSince_s`).
+5. Any change to the string resets that timer.
+6. Checks whether the `stop_button` is visible (one non-blocking pass — the old code polled `_find_element` with a 1000 ms timeout every iteration, so each loop paid a full second just to learn the button was absent).
+7. Returns once the stop button is gone **and** the text has been quiet for the required window: `stability_wait_s` if the stop button was ever seen (its disappearance already proves generation ended), otherwise `stability_wait_s * stability_samples` — on platforms whose stop-button selector never matches, the text is the only evidence, and a model that pauses mid-answer must not be read as finished.
 
 **Batch Extraction (`BrowserManager._extract_responses_batch_impl`):**
-- Operates similarly but loops over an array of tabs in a round-robin fashion on a single thread. This permits multiple Playwright pages to receive network data simultaneously, drastically speeding up Swarm generation.
+- Returns a list aligned with the requested tab ids. Operates similarly but loops over an array of tabs on a single thread. This permits multiple Playwright pages to receive network data simultaneously, drastically speeding up Swarm generation.
 
 **Error Handling:**
 - If loop hits `max_response_wait_s`, raises `ResponseCaptureTimeout`.

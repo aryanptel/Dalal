@@ -2,6 +2,13 @@
 #  Web Chat Orchestrator — Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 # Selectors may need updating if platforms change their DOM structure.
+#
+# config_version: bump this whenever `platforms:` changes. On startup the app
+# compares it with the copy in your Documents folder and refreshes the selectors
+# from the bundled file, keeping your own browser/timing settings and saving a
+# backup of the old file. Without this, a selector fix shipped in a new build
+# would never reach anyone who had already run the app once.
+config_version: 2
 
 browser:
   # Which browser to use: "edge" or "brave"
@@ -38,6 +45,13 @@ timing:
   post_send_delay_s: 1.0       # pause after clicking send before polling
   network_idle_timeout_s: 2.0  # wait for network to idle after generation
 
+# Cross-model context injection
+context:
+  # Hard cap on the injected transcript, in characters. Leave as null for no
+  # limit; when a limit is set the OLDEST messages are dropped first so the
+  # newest turns always survive.
+  max_transcript_chars: null
+
 # Export settings
 export_directory: "exports"
 
@@ -46,8 +60,15 @@ platforms:
     url: "https://chatgpt.com/"
     file_input_selector: "input[type='file']"
     attach_button_selector: "button[aria-label='Attach files'], button[data-testid='composer-attach-button'], button[aria-label='Upload file']"
-    # ChatGPT uses a contenteditable div with id prompt-textarea (or ProseMirror)
-    input_selector: "div#prompt-textarea, div.ProseMirror, [contenteditable='true'][data-placeholder], textarea[placeholder]"
+    # ChatGPT's real composer is a contenteditable ProseMirror div with
+    # id="prompt-textarea". The page ALSO renders a hidden helper
+    # <textarea name="prompt-textarea" placeholder="Ask anything"
+    # class="...fallbackTextarea"> for virtual keyboards. It is "visible" to
+    # Playwright but sits under #thread-bottom-container, so clicking it fails
+    # with "intercepts pointer events" until the timeout. Selectors are tried in
+    # order, so the real editor must come first and the bare textarea must never
+    # be matched generically.
+    input_selector: "div#prompt-textarea[contenteditable='true'], div#prompt-textarea, div.ProseMirror[contenteditable='true'], [contenteditable='true'][data-placeholder], textarea[name='prompt-textarea']:not([class*='allback'])"
     stop_button: "[data-testid='stop-button'], button[aria-label='Stop generating'], button[aria-label='Stop']"
     send_button: "[data-testid='send-button'], button[aria-label='Send prompt'], button[data-testid='composer-send-button']"
     response_selector: "[data-message-author-role='assistant'], div.agent-turn, div.markdown"

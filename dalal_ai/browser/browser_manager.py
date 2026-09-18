@@ -37,7 +37,13 @@ if sys.platform == "win32":
 
 from playwright.sync_api import (
     sync_playwright, Browser, BrowserContext, Page, Playwright, Locator,
+    Error as PlaywrightError,
 )
+
+# Nothing should ever block for Playwright's 30 s default: a hung selector makes
+# the whole UI look frozen with no way to tell what it is waiting for.
+DEFAULT_PAGE_TIMEOUT_MS = 12000
+FOCUS_TIMEOUT_MS = 5000
 
 StatusCallback = Optional[Callable[[str], None]]
 
@@ -204,37 +210,83 @@ class BrowserManager:
             return False
 
     def send_organic_prompt(self, platform: str, text: str, files: Optional[list[str]] = None) -> None:
-        """Type a prompt into the platform's input box (thread-safe)."""
-        self._worker.run(self._send_organic_prompt_impl, platform, text, files)
+        """
+        Type a prompt into the platform's input box (thread-safe).
 
-    def extract_stable_response(self, platform: str) -> str:
-        """Wait for model response and extract it (thread-safe)."""
-        return self._worker.run(self._extract_stable_response_impl, platform)
+        Any Playwright failure is re-raised as :class:`BrowserActionRequired`.
+        A raw Playwright timeout used to escape as a generic exception, so the
+        UI printed a traceback instead of offering the manual-paste fallback —
+        even though "the page would not accept the click" is precisely the case
+        that fallback exists for.
+        """
+        try:
+            self._worker.run(self._send_organic_prompt_impl, platform, text, files)
+        except (BrowserActionRequired, ConnectionError):
+            raise
+        except PlaywrightError as exc:
+            first_line = str(exc).strip().splitlines()[0] if str(exc).strip() else str(exc)
+            raise BrowserActionRequired(
+                platform.split(":")[0],
+                f"❌ The {platform} page did not accept the prompt.\n"
+                f"   {first_line}\n"
+                f"   The tab may still be loading, or an overlay (login, cookie "
+                f"banner, dialog) is covering the composer.",
+            ) from exc
 
-    def send_prompts_batch(self, prompts: list[tuple[str, str]]) -> None:
-        """Type prompts into multiple platforms sequentially (thread-safe)."""
-        self._worker.run(self._send_prompts_batch_impl, prompts)
+    def extract_stable_response(self, platform: str, expect_new: bool = True) -> str:
+        """
+        Wait for the model's reply and extract it (thread-safe).
 
-    def _send_prompts_batch_impl(self, prompts: list[tuple[str, str]]) -> None:
+        expect_new=True  : wait for a reply that differs from the snapshot taken
+                           just before the prompt was sent.  Normal send path.
+        expect_new=False : re-read whatever reply is currently on screen once it
+                           stops changing.  Used by the UI "retry fetch" button,
+                           where the reply is already finished and would never
+                           look "new".
+        """
+        return self._worker.run(
+            self._extract_stable_response_impl, platform, expect_new
+        )
+
+    def send_prompts_batch(self, prompts: list[tuple[str, str]]) -> dict[str, str]:
+        """
+        Type prompts into multiple tabs sequentially (thread-safe).
+
+        Returns a mapping of tab id → error message for the sends that failed,
+        so the caller can tell a silent failure from a slow worker instead of
+        waiting the full timeout on a tab that never received anything.
+        """
+        return self._worker.run(self._send_prompts_batch_impl, prompts)
+
+    def _send_prompts_batch_impl(self, prompts: list[tuple[str, str]]) -> dict[str, str]:
         """Sequentially type and send prompts on the Playwright thread."""
+        failures: dict[str, str] = {}
         for platform_id, text in prompts:
             try:
                 self._send_organic_prompt_impl(platform_id, text)
             except Exception as exc:
                 self._status(f"⚠ Failed to send prompt to {platform_id}: {exc}")
+                failures[platform_id] = str(exc)
+        return failures
 
-    def extract_responses_batch(self, platforms: list[str]) -> dict[str, str]:
-        """Wait for multiple model responses concurrently (thread-safe)."""
+    def extract_responses_batch(self, platforms: list[str]) -> list[str]:
+        """
+        Wait for one reply per entry of *platforms* (thread-safe).
+
+        Returns a list aligned with *platforms*, not a dict.  A dict silently
+        collapses two sub-tasks that were dispatched to the same tab id, which
+        loses one of the two replies.
+        """
         return self._worker.run(self._extract_responses_batch_impl, platforms)
 
-    def _extract_responses_batch_impl(self, platforms: list[str]) -> dict[str, str]:
-        """Sequentially wait for responses on the Playwright thread (they generate concurrently)."""
-        results = {}
+    def _extract_responses_batch_impl(self, platforms: list[str]) -> list[str]:
+        """Wait for each reply in turn; they are generating concurrently already."""
+        results: list[str] = []
         for platform_id in platforms:
             try:
-                results[platform_id] = self._extract_stable_response_impl(platform_id)
+                results.append(self._extract_stable_response_impl(platform_id))
             except Exception as exc:
-                results[platform_id] = f"[Error extracting response: {exc}]"
+                results.append(f"[Error extracting response: {exc}]")
         return results
 
     def list_open_tabs(self) -> list[dict]:
@@ -364,10 +416,11 @@ class BrowserManager:
             
         # Clear and rebuild mapping
         self._pages.clear()
+        live_pages = self._live_pages()
         for name, plat_conf in self._platforms.items():
             self._pages[name] = []
             target_url = plat_conf["url"]
-            for page in self._context.pages:
+            for page in live_pages:
                 try:
                     if self._urls_match(page.url, target_url):
                         self._pages[name].append(page)
@@ -380,11 +433,41 @@ class BrowserManager:
             while len(self._pages[force_platform]) < required_count:
                 try:
                     new_page = self._context.new_page()
-                    new_page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                    # "load", not "domcontentloaded": these are React apps, and
+                    # domcontentloaded fires while the composer is still a
+                    # placeholder, which is how automation ends up typing into
+                    # a pre-hydration decoy element.
+                    new_page.goto(target_url, wait_until="load", timeout=30000)
                     self._pages[force_platform].append(new_page)
                 except Exception as exc:
                     self._status(f"⚠ Could not open tab for {force_platform}: {exc}")
                     break
+
+    def _live_pages(self) -> list[Page]:
+        """
+        Every open tab across all browser contexts, closed ones excluded.
+
+        A closed tab left in the list shifts every later index, which silently
+        re-points a swarm worker at another worker's tab.
+        """
+        contexts = []
+        if self._browser is not None:
+            try:
+                contexts = list(self._browser.contexts)
+            except Exception:
+                contexts = []
+        if not contexts and self._context is not None:
+            contexts = [self._context]
+
+        pages: list[Page] = []
+        for ctx in contexts:
+            try:
+                for page in ctx.pages:
+                    if not page.is_closed():
+                        pages.append(page)
+            except Exception:
+                continue
+        return pages
 
     @staticmethod
     def _urls_match(page_url: str, config_url: str) -> bool:
@@ -406,11 +489,19 @@ class BrowserManager:
             self._discover_platform_pages(required_count=idx + 1, force_platform=platform)
             
         if platform not in self._pages or len(self._pages[platform]) <= idx:
-            raise RuntimeError(
-                f"No browser tab found for '{platform_id}'. "
-                f"Please open {self._platforms[platform]['url']} in the browser."
+            known = self._platforms.get(platform)
+            where = f" Please open {known['url']} in the browser." if known else (
+                f" '{platform}' is not a configured platform; "
+                f"known platforms: {', '.join(self._platforms)}."
             )
-        return self._pages[platform][idx]
+            raise RuntimeError(f"No browser tab found for '{platform_id}'.{where}")
+
+        page = self._pages[platform][idx]
+        try:
+            page.set_default_timeout(DEFAULT_PAGE_TIMEOUT_MS)
+        except Exception:
+            pass
+        return page
 
     # ── Organic Prompt Sending (runs on worker thread) ────────────────────────
 
@@ -427,31 +518,54 @@ class BrowserManager:
             page, plat["response_selector"]
         )
 
-        # 1. Bring tab to focus
+        # 1. Bring the tab to the front and let the composer finish hydrating.
+        #    These are React apps: immediately after a tab is opened or
+        #    re-activated the real editor may not exist yet, and a placeholder
+        #    stands in its place.
         page.bring_to_front()
-        time.sleep(0.3)
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except Exception:
+            pass
+        time.sleep(0.4)
 
-        # 2. Find and focus the input element
-        input_el = self._find_element(page, plat["input_selector"], timeout=10000)
+        # 2. Locate the editor and put the caret in it.  Two attempts, because
+        #    the composer can re-render between finding it and focusing it,
+        #    which invalidates the element we just resolved.
         fallback_used = False
         fallback_btn: Optional[Locator] = None
+        input_el: Optional[Locator] = None
+
+        for attempt in (1, 2):
+            input_el = self._find_element(
+                page, plat["input_selector"], timeout=10000, hit_test=True
+            )
+            if input_el is None:
+                self._status("⚠ Input selector failed. Attempting heuristic fallback...")
+                fallback_input, fallback_btn = self._find_input_and_button_fallback(page)
+                if fallback_input:
+                    self._status("⚠ Using heuristic fallback for input.")
+                    input_el = fallback_input
+                    fallback_used = bool(fallback_btn)
+
+            if input_el is not None and self._focus_element(input_el):
+                break
+
+            if attempt == 1:
+                self._status("⚠ Composer not ready — re-locating it...")
+                time.sleep(1.0)
+                input_el = None
 
         if input_el is None:
-            self._status("⚠ Input selector failed. Attempting heuristic fallback...")
-            fallback_input, fallback_btn = self._find_input_and_button_fallback(page)
-            if fallback_input:
-                self._status("⚠ Using heuristic fallback for input.")
-                input_el = fallback_input
-                fallback_used = True if fallback_btn else False
-            else:
-                raise BrowserActionRequired(
-                    platform,
-                    f"❌ Cannot find input box for {platform}.\n"
-                    f"   Selector: {plat['input_selector']}\n"
-                    f"   The platform UI may have changed. Please check the page manually."
-                )
+            raise BrowserActionRequired(
+                platform,
+                f"❌ Cannot find the input box for {platform}.\n"
+                f"   Selector: {plat['input_selector']}\n"
+                f"   The page may still be loading, an overlay (login prompt, "
+                f"cookie banner, dialog) may be covering the composer, or the "
+                f"platform UI has changed. Check the tab manually."
+            )
 
-        input_el.click()
         time.sleep(0.2)
 
         # 3. Clear any existing content
@@ -575,98 +689,194 @@ class BrowserManager:
     def _clear_input(self, page: Page, element: Locator) -> None:
         """Select all text in the input element and delete it."""
         try:
-            element.click()
+            self._focus_element(element)
             page.keyboard.press(f"{META_KEY}+A")
             page.keyboard.press("Backspace")
             time.sleep(0.1)
         except Exception:
             pass
 
+    _READ_INPUT_JS = (
+        "el => (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') "
+        "? (el.value || '') : (el.innerText || el.textContent || '')"
+    )
+
+    @staticmethod
+    def _squeeze(text: str) -> str:
+        """Collapse whitespace so editor re-formatting does not look like loss."""
+        return " ".join(text.split())
+
+    def _input_holds_text(self, element: Locator, text: str) -> bool:
+        """Whether the editor now contains (substantially) the text we sent."""
+        expected = self._squeeze(text)
+        if not expected:
+            return True
+        try:
+            current = element.evaluate(self._READ_INPUT_JS)
+        except Exception:
+            return False
+        if not isinstance(current, str):
+            return False
+        return len(self._squeeze(current)) >= 0.9 * len(expected)
+
     def _paste_text(self, page: Page, element: Locator, text: str) -> None:
-        """Paste text via clipboard; fall back to JS injection or slow typing."""
+        """
+        Put *text* into the editor, verifying each strategy before moving on.
+
+        A clipboard paste fails silently whenever the OS clipboard is locked by
+        another app or the browser window never took focus — the old code then
+        clicked send on an empty box.  Every strategy here is checked by reading
+        the editor back, so a failure falls through instead of sending nothing.
+        """
         try:
             import pyperclip
             pyperclip.copy(text)
-            element.click()
+            self._focus_element(element)
             page.keyboard.press(f"{META_KEY}+V")
+            time.sleep(0.4)
+            if self._input_holds_text(element, text):
+                return
+            self._status("⚠ Clipboard paste did not land — injecting directly.")
+        except Exception as exc:
+            self._status(f"⚠ Clipboard unavailable ({exc}) — injecting directly.")
+
+        try:
+            element.evaluate(
+                """(el, value) => {
+                    if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+                        const setter = Object.getOwnPropertyDescriptor(
+                            el.tagName === 'TEXTAREA'
+                                ? window.HTMLTextAreaElement.prototype
+                                : window.HTMLInputElement.prototype,
+                            'value'
+                        ).set;
+                        setter.call(el, value);
+                    } else {
+                        el.innerText = value;
+                    }
+                    el.dispatchEvent(new InputEvent('input', {
+                        bubbles: true, data: value, inputType: 'insertFromPaste'
+                    }));
+                }""",
+                text,
+            )
+            time.sleep(0.3)
+            if self._input_holds_text(element, text):
+                return
+            self._status("⚠ Direct injection did not stick — typing instead.")
         except Exception:
-            try:
-                element.evaluate(
-                    """(el, text) => {
-                        el.textContent = text;
-                        el.dispatchEvent(new Event('input', {bubbles: true}));
-                    }""",
-                    text,
-                )
-            except Exception:
-                element.type(text, delay=5)
+            pass
+
+        element.type(text, delay=1)
 
     # ── Response Extraction (runs on worker thread) ───────────────────────────
 
-    def _extract_stable_response_impl(self, platform_id: str) -> str:
-        """Poll the DOM until the model's response text stabilises."""
+    def _extract_stable_response_impl(
+        self, platform_id: str, expect_new: bool = True
+    ) -> str:
+        """
+        Poll the DOM until the model's reply stops changing.
+
+        Two independent signals decide that generation has finished:
+
+        * the platform's own "stop generating" button disappearing, and
+        * the extracted Markdown staying byte-identical for a quiet window.
+
+        The quiet window is ``stability_wait_s`` once the stop button has been
+        seen and has gone (the button already proved generation ended), and the
+        full ``stability_wait_s * stability_samples`` when the button was never
+        found — on those platforms the text is the only evidence we have, and a
+        model that pauses mid-answer must not be mistaken for a finished one.
+        """
         platform = platform_id.split(":")[0]
         page = self._get_page(platform_id)
         plat = self._platforms[platform]
-        stability_wait = self._timing.get("stability_wait_s", 2.0)
-        stability_samples = self._timing.get("stability_samples", 3)
-        max_wait = self._timing.get("max_response_wait_s", 180)
+        stabilityWait_s = float(self._timing.get("stability_wait_s", 2.0))
+        stabilitySamples = max(int(self._timing.get("stability_samples", 3)), 1)
+        maxWait_s = float(self._timing.get("max_response_wait_s", 180))
+        pollInterval_s = min(max(stabilityWait_s / 2.0, 0.25), 1.0)
 
-        start_time = time.time()
-        baseline = self._response_baselines.get(
-            platform_id, self._get_response_snapshot(page, plat["response_selector"])
-        )
-        generation_seen = False
-        response_seen = False
-        network_idle_waited = False
-        stable_count = 0
-        last_text = ""
+        quietAfterStopButton_s = stabilityWait_s
+        quietWithoutStopButton_s = stabilityWait_s * stabilitySamples
+
+        startTime_s = time.time()
+        if expect_new:
+            # Whatever was on screen before we typed is not the answer.
+            baseline = self._response_baselines.get(
+                platform_id,
+                self._get_response_snapshot(page, plat["response_selector"]),
+            )
+        else:
+            # Re-read mode: the reply is already finished, so anything non-empty
+            # currently in the tab is what the caller is asking for.
+            baseline = (-1, "")
+
+        generationSeen = False
+        responseSeen = False
+        networkIdleWaited = False
+        quietSince_s: Optional[float] = None
+        lastText = ""
 
         try:
-            self._status("⏳ Waiting for a new response...")
-            while (time.time() - start_time) < max_wait:
-                stop_btn = self._find_element(page, plat["stop_button"], timeout=1000)
+            self._status(
+                "⏳ Waiting for a new response..."
+                if expect_new
+                else "⏳ Re-reading the latest response..."
+            )
+            while (time.time() - startTime_s) < maxWait_s:
+                generating = self._is_selector_visible(page, plat["stop_button"])
                 snapshot = self._get_response_snapshot(page, plat["response_selector"])
                 is_new_response = self._is_new_response(snapshot, baseline)
 
-                if stop_btn is not None and not generation_seen:
-                    generation_seen = True
+                if generating and not generationSeen:
+                    generationSeen = True
                     self._status("✅ Response started.")
 
-                if stop_btn is None and response_seen and not network_idle_waited:
-                    network_idle_timeout = self._timing.get("network_idle_timeout_s", 2.0)
+                if not generating and responseSeen and not networkIdleWaited:
+                    networkIdleTimeout_s = float(
+                        self._timing.get("network_idle_timeout_s", 2.0)
+                    )
                     self._status("⏳ Waiting for network idle...")
                     try:
-                        page.wait_for_load_state("networkidle", timeout=network_idle_timeout * 1000)
+                        page.wait_for_load_state(
+                            "networkidle", timeout=networkIdleTimeout_s * 1000
+                        )
                     except Exception:
                         pass
-                    network_idle_waited = True
+                    networkIdleWaited = True
                     snapshot = self._get_response_snapshot(page, plat["response_selector"])
                     is_new_response = self._is_new_response(snapshot, baseline)
 
                 if is_new_response:
-                    if not response_seen:
-                        response_seen = True
+                    if not responseSeen:
+                        responseSeen = True
                         self._status("✅ New response detected.")
 
                     current_text = snapshot[1]
-                    if current_text == last_text:
-                        stable_count += 1
-                        if stop_btn is None and stable_count >= stability_samples:
+                    if current_text == lastText:
+                        if quietSince_s is None:
+                            quietSince_s = time.time()
+                        quietFor_s = time.time() - quietSince_s
+                        needed_s = (
+                            quietAfterStopButton_s
+                            if generationSeen
+                            else quietWithoutStopButton_s
+                        )
+                        if not generating and quietFor_s >= needed_s:
                             self._status("✅ Response stable.")
                             return current_text
                     else:
-                        stable_count = 0
-                    last_text = current_text
+                        quietSince_s = None
+                    lastText = current_text
 
-                time.sleep(max(stability_wait / max(stability_samples, 1), 0.1))
+                time.sleep(pollInterval_s)
 
-            if response_seen and last_text:
+            if responseSeen and lastText:
                 self._status("⚠ Stability timeout — returning partial response.")
-                return last_text
+                return lastText
 
             raise TimeoutError(
-                f"⏱ Timed out waiting for a new {platform_id} response after {max_wait}s."
+                f"⏱ Timed out waiting for a new {platform_id} response after {maxWait_s:.0f}s."
             )
         finally:
             self._response_baselines.pop(platform_id, None)
@@ -703,22 +913,157 @@ class BrowserManager:
 
     # ── Utility (runs on worker thread) ───────────────────────────────────────
 
-    def _find_element(self, page: Page, selector: str, timeout: int = 5000) -> Optional[Locator]:
-        """Try each comma-separated CSS selector until one is visible."""
-        selectors = [s.strip() for s in selector.split(",")]
+    def _is_selector_visible(self, page: Page, selector: str) -> bool:
+        """One non-blocking pass over a comma-separated selector list."""
+        for sel in (s.strip() for s in selector.split(",")):
+            if not sel:
+                continue
+            try:
+                if page.locator(sel).first.is_visible():
+                    return True
+            except Exception:
+                continue
+        return False
+
+    # Is this element the thing a user would actually hit at its own centre?
+    # An element can be "visible" to Playwright and still be unreachable: covered
+    # by a sticky container, or an off-screen accessibility helper.  ChatGPT
+    # renders exactly such a decoy — a `fallbackTextarea` carrying the same
+    # placeholder as the real composer, sitting underneath `#thread-bottom-
+    # container`.  Clicking it burns the full click timeout and types nowhere.
+    _HIT_TEST_JS = """
+    el => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 4 || rect.height < 4) return 'tiny';
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) {
+        return 'offscreen';
+      }
+      const top = document.elementFromPoint(cx, cy);
+      if (!top) return 'nothing-at-point';
+      // `el.contains(top)` accepts hitting a child (a ProseMirror <p>).
+      // `top.contains(el)` is deliberately NOT accepted: an ancestor wrapper
+      // receiving the hit is exactly the "covered by the composer" case.
+      if (top === el || el.contains(top)) return 'ok';
+      return 'covered-by:' + (top.id || top.className || top.tagName);
+    }
+    """
+
+    def _hit_test(self, element: Locator) -> str:
+        """Return 'ok' or a short reason the element is not really reachable."""
+        try:
+            verdict = element.evaluate(self._HIT_TEST_JS)
+            return verdict if isinstance(verdict, str) else "unknown"
+        except Exception as exc:
+            return f"error:{exc}"
+
+    def _find_element(
+        self,
+        page: Page,
+        selector: str,
+        timeout: int = 5000,
+        hit_test: bool = False,
+    ) -> Optional[Locator]:
+        """
+        Find the best match for a comma-separated, priority-ordered selector list.
+
+        The old version returned the first *visible* match on the first poll,
+        which silently loses the priority ordering: a low-priority decoy that
+        renders early beats the real editor that hydrates a moment later.  Here
+        a match below the top rank is only accepted once a grace period has
+        passed without a better one appearing, so the preferred selector gets a
+        fair chance to exist first.
+
+        With ``hit_test`` the candidate must also be the topmost element at its
+        own centre.  If nothing passes, a merely-visible match is returned as a
+        last resort rather than failing outright.
+        """
+        selectors = [s.strip() for s in selector.split(",") if s.strip()]
+        if not selectors:
+            return None
+
         start_time = time.time()
         timeout_s = timeout / 1000.0
-        
+        grace_s = min(timeout_s * 0.5, 3.0)
+
+        best_solid: Optional[tuple[int, Locator]] = None
+        best_visible: Optional[tuple[int, Locator]] = None
+        rejected: dict[str, str] = {}
+
         while (time.time() - start_time) < timeout_s:
-            for sel in selectors:
+            for rank, sel in enumerate(selectors):
                 try:
                     locator = page.locator(sel).first
-                    if locator.is_visible():
-                        return locator
+                    if not locator.is_visible():
+                        continue
                 except Exception:
-                    pass
-            time.sleep(0.1)
+                    continue
+
+                if best_visible is None or rank < best_visible[0]:
+                    best_visible = (rank, locator)
+
+                if hit_test:
+                    verdict = self._hit_test(locator)
+                    if verdict != "ok":
+                        rejected[sel] = verdict
+                        continue
+
+                if rank == 0:
+                    return locator
+                if best_solid is None or rank < best_solid[0]:
+                    best_solid = (rank, locator)
+
+            if best_solid is not None and (time.time() - start_time) >= grace_s:
+                return best_solid[1]
+            time.sleep(0.15)
+
+        if best_solid is not None:
+            return best_solid[1]
+        if best_visible is not None:
+            if rejected:
+                detail = "; ".join(f"{s} -> {v}" for s, v in list(rejected.items())[:3])
+                self._status(f"⚠ No cleanly clickable match ({detail}); using best visible.")
+            return best_visible[1]
         return None
+
+    @staticmethod
+    def _is_focused(element: Locator) -> bool:
+        """Whether the caret is now inside this element."""
+        try:
+            return bool(element.evaluate(
+                "el => el === document.activeElement"
+                " || el.contains(document.activeElement)"
+            ))
+        except Exception:
+            return False
+
+    def _focus_element(self, element: Locator) -> bool:
+        """
+        Put the caret in an editor without depending on a clickable point.
+
+        ``focus()`` is tried first because it does not hit-test, so an overlay
+        or sticky container cannot intercept it — the failure mode behind
+        "<div ...> intercepts pointer events" repeated until the click timed out.
+        A real click follows only as a fallback, with a short explicit timeout
+        rather than Playwright's 30 s default, and finally a forced click.
+        """
+        try:
+            element.focus(timeout=FOCUS_TIMEOUT_MS)
+            if self._is_focused(element):
+                return True
+        except Exception:
+            pass
+
+        for force in (False, True):
+            try:
+                element.click(timeout=FOCUS_TIMEOUT_MS, force=force)
+                return True
+            except Exception:
+                continue
+
+        self._status("⚠ Could not focus the input box (it may be covered).")
+        return False
 
     def _is_connected_impl(self) -> bool:
         """Check if the Playwright browser object is connected."""
@@ -726,10 +1071,10 @@ class BrowserManager:
 
     def _list_open_tabs_impl(self) -> list[dict]:
         """Return a list of dicts with 'title' and 'url' for each open tab."""
-        if not self._context:
+        if not self._context and not self._browser:
             return []
         tabs: list[dict] = []
-        for page in self._context.pages:
+        for page in self._live_pages():
             try:
                 tabs.append({"title": page.title(), "url": page.url})
             except Exception:
@@ -743,7 +1088,7 @@ class BrowserManager:
             inputs = page.locator('[contenteditable="true"]').all()
             max_area = -1
             for el in inputs:
-                if el.is_visible():
+                if el.is_visible() and self._hit_test(el) == "ok":
                     box = el.bounding_box()
                     if box:
                         area = box['width'] * box['height']
@@ -777,6 +1122,21 @@ class BrowserManager:
 # Register atexit handler to ensure the playwright worker is stopped gracefully
 @atexit.register
 def _cleanup_playwright_worker() -> None:
+    """
+    Shut Playwright down *on its own thread*.
+
+    Sync Playwright is greenlet-bound: calling stop() from the interpreter's
+    exit thread raises "cannot switch to a different thread" and leaves the
+    node driver process alive.
+    """
     worker = _PlaywrightWorker._instance
-    if worker is not None:
-        worker.stop_playwright()
+    if worker is None:
+        return
+    try:
+        worker.run(worker.stop_playwright, timeout=10)
+    except Exception:
+        pass
+    try:
+        worker._queue.put(None)
+    except Exception:
+        pass

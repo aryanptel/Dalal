@@ -108,29 +108,40 @@ class Orchestrator:
 
             all_files = list(files) if files else []
             if flagged_mgr:
+                # Select without committing: if the browser send fails, this
+                # context must stay pending instead of being marked delivered
+                # to a model that never saw it.
                 selected = flagged_mgr.build_context(
-                    self.context.messages, platform, selected_red_ids
+                    self.context.messages, platform, selected_red_ids, commit=False
                 )
                 for msg in selected:
                     if msg.get("files"):
                         all_files.extend(msg["files"])
             else:
                 selected = []
-                
-            transcript_limit = None
+
+            transcript_limit = self.config.get("context", {}).get("max_transcript_chars")
 
             transcript = self.context.build_context_transcript(
                 messages=selected, max_chars=transcript_limit
             )
             full_prompt = f"{transcript}\n\n**User:** {user_message}" if transcript else user_message
         else:
+            selected = []
             full_prompt = user_message
-            all_files = files
+            all_files = list(files) if files else []
 
         try:
             self.browser.send_organic_prompt(platform, full_prompt, files=all_files)
         except RuntimeError as exc:
             raise BrowserActionRequired(platform, str(exc)) from exc
+
+        # The prompt is in the tab: only now is the context genuinely delivered.
+        if flagged_mgr:
+            if selected:
+                flagged_mgr.commit_delivery(self.context.messages, platform, selected)
+            else:
+                flagged_mgr.mark_contacted(platform)
 
         self.context.add_message("user", user_message, model=platform, files=files)
 

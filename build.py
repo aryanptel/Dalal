@@ -26,6 +26,84 @@ def build_exe():
     # Run PyInstaller with the spec file
     subprocess.run([sys.executable, "-m", "PyInstaller", "DalalAI.spec", "--clean", "--noconfirm"], check=True)
 
+def _dist_root():
+    """
+    Locate the one-folder output.
+
+    PyInstaller 6 puts everything except the launcher under ``_internal``;
+    PyInstaller 5 puts it beside the launcher.  Return (app_dir, payload_dir).
+    """
+    app_dir = os.path.join("dist", "DalalAI")
+    internal = os.path.join(app_dir, "_internal")
+    return app_dir, (internal if os.path.isdir(internal) else app_dir)
+
+
+def verify_build():
+    """
+    Fail the build if the frozen app is missing something it needs at runtime.
+
+    This exists because of a real shipped bug: `dalal_ai/` and `utils/` were
+    packaged as *data* only, so PyInstaller never parsed them and `pyperclip`
+    — imported solely inside `browser_manager._paste_text` — was absent from
+    dist entirely.  The build succeeded, the app started, and clipboard paste
+    silently failed on every machine that did not also have the source tree.
+    A missing module cannot be caught by "it builds", only by looking.
+    """
+    print("🔍 Verifying build contents...")
+    app_dir, payload = _dist_root()
+
+    exe_name = "DalalAI.exe" if sys.platform == "win32" else "DalalAI"
+    exe_path = os.path.join(app_dir, exe_name)
+
+    required_files = [
+        exe_path,
+        os.path.join(payload, "config.yaml"),
+        os.path.join(payload, "dalal_ai", "ui", "app.py"),
+        os.path.join(payload, "dalal_ai", "browser", "response_script.js"),
+    ]
+    required_dirs = [
+        os.path.join(payload, "playwright", "driver"),
+        os.path.join(payload, "streamlit", "static"),
+    ]
+    # Pure-Python packages live inside the PYZ archive embedded in the exe, so
+    # they are invisible on disk.  The archive's table of contents stores module
+    # names as plain text, so scanning the binary for them is a reliable check.
+    required_modules = [
+        "pyperclip",
+        "dalal_ai.browser.browser_manager",
+        "dalal_ai.core.swarm_orchestrator",
+        "utils.paths",
+        "streamlit.web.cli",
+    ]
+
+    problems = []
+    for path in required_files:
+        if not os.path.isfile(path):
+            problems.append(f"missing file: {path}")
+    for path in required_dirs:
+        if not os.path.isdir(path):
+            problems.append(f"missing directory: {path}")
+
+    if os.path.isfile(exe_path):
+        try:
+            with open(exe_path, "rb") as fh:
+                blob = fh.read()
+            for module in required_modules:
+                if module.encode("utf-8") not in blob:
+                    problems.append(f"module not frozen into the exe: {module}")
+        except OSError as exc:
+            problems.append(f"could not read {exe_path}: {exc}")
+
+    if problems:
+        print("❌ Build verification FAILED:")
+        for problem in problems:
+            print(f"   • {problem}")
+        print("\n   Check hiddenimports/datas in DalalAI.spec.")
+        sys.exit(1)
+
+    print("✅ Build verification passed.")
+
+
 def prepare_release_files():
     print("📝 Preparing release artifacts...")
     # Write a simple README.txt and LICENSE for the release folder if they don't exist
@@ -82,6 +160,7 @@ def main():
     clean()
     check_dependencies()
     build_exe()
+    verify_build()
     prepare_release_files()
     build_installer()
     print("\n🎉 Build complete! Check the 'release' directory.")

@@ -59,6 +59,11 @@ PLATFORM_COLORS = {
 }
 
 
+# Shared with the shutdown watchdog, which runs off the Streamlit script thread
+# and therefore cannot read st.session_state.
+_SHUTDOWN_HOOKS: dict[str, Any] = {}
+
+
 def load_config() -> dict[str, Any]:
     init_user_data()
     config_path = get_config_path()
@@ -88,6 +93,7 @@ def init_session_state(config: dict[str, Any]) -> None:
     st.session_state.swarm_orchestrator = None
     st.session_state.swarm_mode = False
     st.session_state.swarm_moderator = "chatgpt"
+    st.session_state.swarm_workers = []
     st.session_state.retry_action = None
     st.session_state.initialized = True
 
@@ -120,12 +126,14 @@ def connect_browser() -> None:
         )
         st.session_state.connected = True
         st.session_state.connection_error = ""
+        _SHUTDOWN_HOOKS["browser"] = browser
         logger.info("Browser connected and Orchestrator created.")
     except Exception as exc:
         st.session_state.browser = None
         st.session_state.orchestrator = None
         st.session_state.connected = False
         st.session_state.connection_error = str(exc)
+        _SHUTDOWN_HOOKS.pop("browser", None)
         logger.error(f"Failed to connect browser: {exc}")
 
 
@@ -320,58 +328,63 @@ with st.sidebar:
         if st.button("Disconnect", use_container_width=True):
             if st.session_state.browser:
                 st.session_state.browser.disconnect()
+            _SHUTDOWN_HOOKS.pop("browser", None)
             st.session_state.browser = None
             st.session_state.orchestrator = None
             st.session_state.connected = False
             st.session_state.pending_manual = None
             st.rerun()
             
-    # Auto-shutdown logic
+    # Auto-shutdown: the packaged app has no console, so the Streamlit server
+    # must stop itself once the user closes the browser tab.
     if "auto_shutdown_started" not in st.session_state:
         st.session_state.auto_shutdown_started = True
         import threading
         import time
-        import os
-        
-        def monitor_sessions():
-            try:
-                # Wait for initial connection to settle
-                time.sleep(5)
-                empty_count = 0
-                while True:
-                    time.sleep(2)
+
+        def monitor_sessions() -> None:
+            # A reload, a sleeping laptop or a slow reconnect all show zero
+            # sessions for a few seconds.  Exiting on a 6-second gap killed the
+            # server mid-reload; require a longer quiet window, and never exit
+            # before a real session has been observed at least once.
+            pollInterval_s = 2.0
+            quietBeforeExit_s = 30.0
+            requiredEmptyPolls = int(quietBeforeExit_s / pollInterval_s)
+
+            sessionEverSeen = False
+            emptyPolls = 0
+            while True:
+                time.sleep(pollInterval_s)
+                try:
+                    from streamlit.runtime import get_instance
+                    runtime = get_instance()
+                    sessions = runtime._session_mgr.list_active_sessions()
+                    count = len(sessions)
+                except Exception:
+                    # Unknown runtime state is not evidence that nobody is here.
+                    continue
+
+                if count > 0:
+                    sessionEverSeen = True
+                    emptyPolls = 0
+                    continue
+
+                if not sessionEverSeen:
+                    continue
+
+                emptyPolls += 1
+                if emptyPolls >= requiredEmptyPolls:
+                    logger.info("No active Streamlit sessions; shutting down.")
                     try:
-                        from streamlit.runtime import get_instance
-                        runtime = get_instance()
-                        if hasattr(runtime, '_session_mgr'):
-                            sessions = runtime._session_mgr.list_active_sessions()
-                            count = len(sessions)
-                        else:
-                            count = 1 # Fallback if API changes
+                        if _SHUTDOWN_HOOKS.get("browser"):
+                            _SHUTDOWN_HOOKS["browser"].disconnect()
                     except Exception:
-                        count = 1
-                        
-                    if count == 0:
-                        empty_count += 1
-                        if empty_count >= 3: # ~6 seconds of 0 active sessions
-                            try:
-                                # Ensure playwright cleans up if we can reach it
-                                if 'browser' in st.session_state and st.session_state.browser:
-                                    st.session_state.browser.disconnect()
-                            except Exception:
-                                pass
-                            os._exit(0)
-                    else:
-                        empty_count = 0
-            except Exception:
-                pass
-                
-        thread = threading.Thread(target=monitor_sessions, daemon=True)
-        try:
-            from streamlit.runtime.scriptrunner import add_script_run_ctx
-            add_script_run_ctx(thread)
-        except Exception:
-            pass
+                        pass
+                    os._exit(0)
+
+        thread = threading.Thread(
+            target=monitor_sessions, daemon=True, name="session-watchdog"
+        )
         thread.start()
 
     st.divider()
@@ -543,7 +556,12 @@ if st.session_state.get("retry_action"):
     if platform and st.session_state.orchestrator:
         with st.spinner(f"Retrying fetch from {platform}..."):
             try:
-                response = st.session_state.orchestrator.browser.extract_stable_response(platform)
+                # expect_new=False: the reply is already on screen and finished,
+                # so waiting for one that differs from a fresh baseline would
+                # just burn the full max_response_wait_s and then fail.
+                response = st.session_state.orchestrator.browser.extract_stable_response(
+                    platform, expect_new=False
+                )
                 if retry_msg["role"] == "assistant":
                     st.session_state.context.update_message_content(idx, response)
                 else:
@@ -663,6 +681,7 @@ else:
             with st.chat_message("assistant", avatar="🐝"):
                 st.markdown(f"**Swarm Mode:** {render_model_badge(st.session_state.swarm_moderator)} is moderating.", unsafe_allow_html=True)
                 success = False
+                final_answer = None
                 try:
                     with st.status("Swarm active... Delegating to workers.", expanded=True) as status:
                         for update in st.session_state.swarm_orchestrator.execute_swarm_task(
@@ -679,10 +698,20 @@ else:
                             elif update["type"] == "complete":
                                 status.update(label="Swarm Task Complete!", state="complete")
                                 final_answer = update["answer"]
-                    st.markdown(final_answer)
-                    st.session_state.selected_red_ids = []
-                    success = True
+                    if final_answer is None:
+                        # The generator ended without a "complete" update — say so
+                        # rather than raising NameError on an unbound variable.
+                        st.warning(
+                            "The swarm stopped before producing a final answer. "
+                            "Check the activity log and the moderator tab."
+                        )
+                    else:
+                        st.markdown(final_answer)
+                        st.session_state.selected_red_ids = []
+                        success = True
                 except Exception as exc:
+                    import traceback
+                    logger.error(f"Swarm execution failed: {traceback.format_exc()}")
                     st.error(f"Swarm execution failed: {exc}")
         else:
             with st.chat_message("assistant", avatar="🤖"):
@@ -715,6 +744,9 @@ else:
                         ),
                     }
                     st.warning(str(exc))
+                    # The paste form is rendered further up the script, so it
+                    # only appears after a rerun.
+                    st.rerun()
 
                 except ResponseCaptureTimeout as exc:
                     st.session_state.pending_manual = {
@@ -727,6 +759,7 @@ else:
                         ),
                     }
                     st.warning(str(exc))
+                    st.rerun()
 
                 except Exception as exc:
                     # Persist the error so it survives st.rerun()

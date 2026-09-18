@@ -40,65 +40,182 @@ Once all delegated sub-tasks are complete, or if no delegation is needed, output
 DO NOT wrap your final answer in JSON. DO NOT use the {{"status": "complete"}} format. Just write the Markdown normally.
 """
 
+# A runaway plan would open a browser tab per sub-task, so cap it.
+MAX_SUBTASKS_PER_ROUND = 8
+
+
 class SwarmOrchestrator:
     def __init__(self, browser_manager: BrowserManager, context_manager: ContextManager):
         self.browser = browser_manager
         self.context = context_manager
 
-    def _extract_json(self, text: str) -> dict:
-        """Robustly extract JSON block from text."""
-        
-        # Sanitize text: AI models often output LaTeX (e.g., \ref) inside JSON strings,
-        # which creates invalid JSON escape sequences. We double-escape any backslash
-        # that isn't part of a standard JSON escape sequence (like \", \\, \n).
-        # We also allow \r and \t just in case they meant a literal tab/return, but
-        # usually it's \ref or \textbf which are invalid.
-        sanitized_text = re.sub(r'\\(?=[^"\\\\nrtbf])', r'\\\\', text)
+    def _record(
+        self, content: str, model: str, swarm_role: str, role: str = "assistant"
+    ) -> None:
+        """
+        Append to history, tolerating an empty body.
 
-        # Try to find markdown json block
-        match = re.search(r'```json\s*(\{.*?\})\s*```', sanitized_text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group(1), strict=False)
-            except json.JSONDecodeError:
-                pass
-        
-        # Try generic markdown block
-        match = re.search(r'```\s*(\{.*?\})\s*```', sanitized_text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group(1), strict=False)
-            except json.JSONDecodeError:
-                pass
+        ContextManager rejects empty content, and a worker that timed out or was
+        never reached returns exactly that — which used to raise mid-round and
+        abort the whole swarm run after the expensive part was already done.
+        """
+        text = (content or "").strip()
+        if not text:
+            text = f"[{model} returned no content]"
+        try:
+            self.context.add_message(role, text, model, swarm_role=swarm_role)
+        except ValueError as exc:
+            logger.warning(f"Could not record {swarm_role} message for {model}: {exc}")
 
-        # Fallback to finding raw braces (greedy)
-        match = re.search(r'\{.*\}', sanitized_text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group(0), strict=False)
-            except json.JSONDecodeError:
-                pass
-                
-        # Final fallback: Manual regex extraction if the model completely butchered the JSON format
-        status_match = re.search(r'"status"\s*:\s*"([^"]+)"', text)
-        if status_match:
-            status = status_match.group(1)
-            if status == "complete":
-                # Use greedy (.*) to capture everything up to the final quote, allowing for unescaped quotes inside
-                answer_match = re.search(r'"answer"\s*:\s*"(.*)"\s*\}?$', text, re.DOTALL | re.IGNORECASE)
-                if answer_match:
-                    raw_answer = answer_match.group(1).strip()
-                    try:
-                        import codecs
-                        raw_answer = codecs.decode(raw_answer, 'unicode_escape')
-                    except Exception:
-                        pass
-                    return {"status": "complete", "answer": raw_answer}
-                else:
-                    # If we can't find answer nicely, just dump the whole text
-                    return {"status": "complete", "answer": text}
+    # ── Moderator reply parsing ──────────────────────────────────────────────
 
-        raise ValueError("Could not extract valid JSON from response")
+    @staticmethod
+    def _sanitize_json(text: str) -> str:
+        r"""
+        Double any backslash that is not a legal JSON escape.
+
+        Models routinely put LaTeX (``\\frac``) or Windows paths (``C:\\Users``)
+        inside JSON strings, which is invalid JSON.  Legal escapes
+        (``\\" \\\\ \\/ \\b \\f \\n \\r \\t \\uXXXX``) are left alone.
+        """
+        return re.sub(r'\\(?![\\"\\\\/bfnrtu])', r'\\\\', text)
+
+    @staticmethod
+    def _iter_json_candidates(text: str):
+        r"""
+        Yield every balanced ``{...}`` span in *text*, outermost first.
+
+        A greedy ``\{.*\}`` regex swallows prose that merely contains braces
+        (LaTeX, code samples), so a balanced scan is used instead.  Braces
+        inside JSON string literals are skipped.
+        """
+        fenced = re.findall(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+        for block in fenced:
+            yield block
+
+        depth = 0
+        start = -1
+        in_string = False
+        escaped = False
+        for i, ch in enumerate(text):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == '\\':
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == '{':
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == '}':
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start >= 0:
+                        yield text[start:i + 1]
+
+    def _parse_moderator_reply(self, text: str) -> tuple[str, Any]:
+        """
+        Classify a moderator reply.
+
+        Returns ``("delegate", plan_dict)`` only when the reply really is a
+        delegation plan — a JSON object with ``status == "delegating"`` and a
+        non-empty ``plan`` list.  Everything else is the final answer, returned
+        as ``("final", markdown)``.
+
+        The old code guessed: any parseable object counted, and an unparseable
+        one was rebuilt with ``codecs.unicode_escape``, which corrupts LaTeX and
+        Windows paths in the very answers it was trying to rescue.  Mode 2
+        replies are plain Markdown by protocol, so "not a valid plan" is the
+        correct and safe default.
+        """
+        for candidate in self._iter_json_candidates(text):
+            for attempt in (candidate, self._sanitize_json(candidate)):
+                try:
+                    obj = json.loads(attempt, strict=False)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(obj, dict):
+                    break
+                plan = obj.get("plan")
+                if obj.get("status") == "delegating" and isinstance(plan, list) and plan:
+                    return "delegate", obj
+                answer = obj.get("answer")
+                if isinstance(answer, str) and answer.strip():
+                    # Moderator wrapped its final answer in JSON anyway.
+                    return "final", answer.strip()
+                break
+        return "final", text
+
+    # ── Worker tab assignment ────────────────────────────────────────────────
+
+    @staticmethod
+    def _assign_worker_tabs(plan: list[dict], worker_ids: list[str]) -> list[str]:
+        """
+        Map each sub-task's requested ``agent`` onto a real worker tab id.
+
+        The moderator writes free text, so it may answer ``"deepseek"`` with no
+        index, name a worker that was never offered, or ask for an index that
+        does not exist.  A bare platform name is the dangerous case: tab index 0
+        is the *moderator's own* tab, so an unresolved ``"deepseek"`` used to
+        drop a worker prompt straight into the moderator's conversation and
+        corrupt the round.  Every id is therefore snapped onto ``worker_ids``,
+        preferring an unused tab of the platform the moderator actually asked
+        for.
+        """
+        by_platform: dict[str, list[str]] = {}
+        for wid in worker_ids:
+            by_platform.setdefault(wid.split(":", 1)[0], []).append(wid)
+
+        used: set[str] = set()
+
+        def first_free(candidates: list[str]) -> Optional[str]:
+            for cand in candidates:
+                if cand not in used:
+                    return cand
+            return candidates[0] if candidates else None
+
+        assigned: list[str] = []
+        for position, subtask in enumerate(plan):
+            requested = str(subtask.get("agent", "") or "").strip().lower()
+            platform = requested.split(":", 1)[0]
+
+            if requested in worker_ids and requested not in used:
+                tab = requested
+            elif platform in by_platform:
+                tab = first_free(by_platform[platform])
+            else:
+                tab = first_free(worker_ids) or worker_ids[position % len(worker_ids)]
+
+            assigned.append(tab)
+            used.add(tab)
+        return assigned
+
+    @staticmethod
+    def _split_into_waves(assigned: list[str]) -> list[list[int]]:
+        """
+        Group sub-task positions so that no tab appears twice in one wave.
+
+        Two prompts sent to the same tab before either reply is read loses the
+        first reply outright.  Extra sub-tasks for a busy tab run in a later
+        wave instead of being dropped or overwritten.
+        """
+        waves: list[list[int]] = []
+        wave_tabs: list[set[str]] = []
+        for position, tab in enumerate(assigned):
+            for index, tabs in enumerate(wave_tabs):
+                if tab not in tabs:
+                    waves[index].append(position)
+                    tabs.add(tab)
+                    break
+            else:
+                waves.append([position])
+                wave_tabs.append({tab})
+        return waves
 
     def execute_swarm_task(
         self, 
@@ -137,14 +254,18 @@ class SwarmOrchestrator:
             example_agent_2=example_agent_2
         )
         
-        # Build context for moderator if flagged_mgr is provided
+        # Build context for moderator if flagged_mgr is provided.  Delivery is
+        # committed only once the prompt has actually reached the tab.
         all_files = list(files) if files else []
+        moderator_context: list[dict[str, Any]] = []
         if flagged_mgr:
-            selected = flagged_mgr.build_context(self.context.messages, moderator, selected_red_ids)
-            for msg in selected:
+            moderator_context = flagged_mgr.build_context(
+                self.context.messages, moderator, selected_red_ids, commit=False
+            )
+            for msg in moderator_context:
                 if msg.get("files"):
                     all_files.extend(msg["files"])
-            transcript = self.context.build_context_transcript(messages=selected)
+            transcript = self.context.build_context_transcript(messages=moderator_context)
             if transcript:
                 mod_system = f"{transcript}\n\n{mod_system}"
 
@@ -153,6 +274,7 @@ class SwarmOrchestrator:
         self.context.add_message("user", prompt, moderator, flag="green", swarm_role="moderator", files=files)
         
         current_prompt = full_prompt
+        mod_response = ""
         round_num = 1
         
         while round_num <= max_rounds:
@@ -161,75 +283,125 @@ class SwarmOrchestrator:
             # Send to Moderator
             if round_num == 1:
                 self.browser.send_organic_prompt(moderator, current_prompt, files=all_files)
+                if flagged_mgr and moderator_context:
+                    flagged_mgr.commit_delivery(
+                        self.context.messages, moderator, moderator_context
+                    )
+                    moderator_context = []
             else:
                 self.browser.send_organic_prompt(moderator, current_prompt)
             mod_response = self.browser.extract_stable_response(moderator)
             
             # Phase 2 & 3: Parse and Dispatch
-            try:
-                plan_json = self._extract_json(mod_response)
-            except ValueError:
-                logger.warning(f"Failed to parse JSON from moderator on round {round_num}. Treating as complete.")
-                plan_json = {"status": "complete", "answer": mod_response}
-                
-            status = plan_json.get("status", "complete")
-            
-            if status == "complete":
-                answer = plan_json.get("answer", mod_response)
-                self.context.add_message("assistant", answer, moderator, swarm_role="moderator")
+            kind, payload = self._parse_moderator_reply(mod_response)
+
+            if kind == "final":
+                answer = payload if isinstance(payload, str) and payload.strip() else mod_response
+                self._record(answer, moderator, "moderator")
                 yield {"type": "complete", "answer": answer}
                 return
-                
-            elif status == "delegating":
-                plan = plan_json.get("plan", [])
-                plan_str = json.dumps(plan_json, indent=2)
-                yield {"type": "status", "message": f"Round {round_num}: Delegating tasks to {len(plan)} workers in parallel...\n```json\n{plan_str}\n```"}
-                
-                # Dispatch in parallel
-                prompts_to_send = []
-                for subtask in plan:
-                    agent = subtask.get("agent", example_agent_1).lower()
-                    role = subtask.get("role", "Worker")
-                    task = subtask.get("task", "")
-                    
-                    worker_prompt = f"Role: {role}\nTask: {task}"
-                    
-                    # Inject flagged context to worker if available
-                    if flagged_mgr:
-                        selected = flagged_mgr.build_context(self.context.messages, agent, [])
-                        transcript = self.context.build_context_transcript(messages=selected)
-                        if transcript:
-                            worker_prompt = f"{transcript}\n\n**Swarm Task:**\n{worker_prompt}"
-                            
-                    prompts_to_send.append((agent, worker_prompt))
-                    
-                    self.context.add_message("user", worker_prompt, agent, swarm_role="worker")
-                
-                # Send prompts in batch
-                self.browser.send_prompts_batch(prompts_to_send)
-                
-                # Extract responses in batch (Parallel Network Wait)
-                platforms_to_extract = [p[0] for p in prompts_to_send]
-                responses = self.browser.extract_responses_batch(platforms_to_extract)
-                
-                # Aggregate results via XML
-                xml_results = []
-                for subtask in plan:
-                    agent = subtask.get("agent", example_agent_1).lower()
-                    role = subtask.get("role", "Worker")
-                    worker_response = responses.get(agent, "[No response or timeout]")
-                    
-                    xml_block = f'<worker name="{agent}" role="{role}">\n{worker_response}\n</worker>'
-                    xml_results.append(xml_block)
-                    
-                    self.context.add_message("assistant", worker_response, agent, swarm_role="worker")
-                
-                aggregated_xml = "\n\n".join(xml_results)
-                
-                # Inject back to moderator
-                current_prompt = f"Worker results:\n{aggregated_xml}\n\nReview the results. Output FORMAT 2 if complete, or FORMAT 1 to delegate further."
-                yield {"type": "status", "message": f"Round {round_num}: Re-injecting results to Moderator..."}
-                
+
+            plan = [item for item in payload.get("plan", []) if isinstance(item, dict)]
+            if not plan:
+                self._record(mod_response, moderator, "moderator")
+                yield {"type": "complete", "answer": mod_response}
+                return
+            if len(plan) > MAX_SUBTASKS_PER_ROUND:
+                logger.warning(
+                    f"Moderator asked for {len(plan)} sub-tasks; capping at {MAX_SUBTASKS_PER_ROUND}."
+                )
+                plan = plan[:MAX_SUBTASKS_PER_ROUND]
+
+            assigned = self._assign_worker_tabs(plan, worker_ids)
+            plan_str = json.dumps({"status": "delegating", "plan": plan}, indent=2)
+            yield {
+                "type": "status",
+                "message": (
+                    f"Round {round_num}: delegating {len(plan)} sub-task(s) to "
+                    f"{', '.join(sorted(set(assigned)))}...\n```json\n{plan_str}\n```"
+                ),
+            }
+
+            # Build one prompt per sub-task, addressed to its resolved tab.
+            worker_prompts: list[str] = []
+            pending_context: list[Any] = []
+            for position, subtask in enumerate(plan):
+                tab = assigned[position]
+                role = str(subtask.get("role", "Worker"))
+                task = str(subtask.get("task", "")).strip()
+
+                worker_prompt = f"Role: {role}\nTask: {task}"
+                selected: list[dict[str, Any]] = []
+                if flagged_mgr:
+                    # Selection is not committed until the prompt actually lands
+                    # in the tab, otherwise a failed send burns the context.
+                    selected = flagged_mgr.build_context(
+                        self.context.messages, tab, [], commit=False
+                    )
+                    transcript = self.context.build_context_transcript(messages=selected)
+                    if transcript:
+                        worker_prompt = f"{transcript}\n\n**Swarm Task:**\n{worker_prompt}"
+
+                worker_prompts.append(worker_prompt)
+                pending_context.append(selected)
+                self._record(worker_prompt, tab, "worker", role="user")
+
+            # Dispatch.  Sub-tasks that share a tab run in later waves: two
+            # prompts in one tab before either reply is read loses the first.
+            responses: list[str] = ["[No response]"] * len(plan)
+            for wave_no, wave in enumerate(self._split_into_waves(assigned), start=1):
+                if len(wave) < len(plan):
+                    yield {
+                        "type": "status",
+                        "message": f"Round {round_num}: wave {wave_no} — {len(wave)} worker(s) running...",
+                    }
+                failures = self.browser.send_prompts_batch(
+                    [(assigned[i], worker_prompts[i]) for i in wave]
+                ) or {}
+
+                live = [i for i in wave if assigned[i] not in failures]
+                for i in wave:
+                    if assigned[i] in failures:
+                        responses[i] = f"[Could not send task to {assigned[i]}: {failures[assigned[i]]}]"
+                    elif flagged_mgr and pending_context[i]:
+                        flagged_mgr.commit_delivery(
+                            self.context.messages, assigned[i], pending_context[i]
+                        )
+
+                extracted = self.browser.extract_responses_batch([assigned[i] for i in live])
+                for slot, i in enumerate(live):
+                    if slot < len(extracted):
+                        responses[i] = extracted[slot]
+
+            # Aggregate results for the moderator.
+            xml_results = []
+            for position, subtask in enumerate(plan):
+                tab = assigned[position]
+                role = str(subtask.get("role", "Worker"))
+                worker_response = responses[position] or "[Empty response]"
+                xml_results.append(
+                    f'<worker name="{tab}" role="{role}">\n{worker_response}\n</worker>'
+                )
+                self._record(worker_response, tab, "worker")
+
+            aggregated_xml = "\n\n".join(xml_results)
+            current_prompt = (
+                f"Worker results:\n{aggregated_xml}\n\n"
+                "Review the results. Output MODE 2 (plain Markdown) if you can now "
+                "answer the user, or MODE 1 (a JSON plan) to delegate further."
+            )
+            yield {"type": "status", "message": f"Round {round_num}: Re-injecting results to Moderator..."}
+
             round_num += 1
-            
-        yield {"type": "complete", "answer": "Max rounds reached. Swarm terminated early."}
+
+        # Out of rounds: the moderator's last reply is the best answer we have,
+        # so surface and persist it instead of throwing the round away.
+        final_answer = mod_response or "Max rounds reached without an answer."
+        self._record(final_answer, moderator, "moderator")
+        yield {
+            "type": "complete",
+            "answer": (
+                f"_Swarm stopped after {max_rounds} round(s); "
+                f"showing the moderator's last reply._\n\n{final_answer}"
+            ),
+        }

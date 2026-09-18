@@ -152,6 +152,14 @@ class ContextManager:
             line = f"**{role_label}** [{timestamp}]:\n{msg['content']}"
             lines.append(line)
 
+        # Trim from the front when a budget is set.  The parameter used to be
+        # accepted and ignored, so an oversized transcript was pasted whole and
+        # silently truncated by the platform's own input limit — losing the
+        # newest, most relevant turns rather than the oldest ones.
+        if max_chars is not None:
+            while len(lines) > 1 and sum(len(l) + 2 for l in lines) > max_chars:
+                lines.pop(0)
+
         # Assemble the transcript
         header = (
             "### 📋 System Context — Conversation History\n"
@@ -219,15 +227,32 @@ class ContextManager:
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def _auto_save(self) -> None:
-        """Persist state to disk if a path was configured."""
+        """
+        Persist state to disk if a path was configured.
+
+        Written to a sibling temp file and then renamed, so an interrupted save
+        cannot leave a half-written chat_history.json behind — the previous
+        in-place write truncated the file first, and a crash at that moment lost
+        the entire conversation.
+        """
         if not self._persist_path:
             return
+        directory = os.path.dirname(self._persist_path) or "."
+        tmp_path = f"{self._persist_path}.tmp"
         try:
-            os.makedirs(os.path.dirname(self._persist_path) or ".", exist_ok=True)
-            with open(self._persist_path, "w", encoding="utf-8") as f:
+            os.makedirs(directory, exist_ok=True)
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump({
                     "messages": self.messages,
                     "last_used_model": self.last_used_model,
                 }, f, indent=2, ensure_ascii=False)
-        except IOError:
-            pass  # non-critical
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self._persist_path)
+        except (IOError, OSError, TypeError, ValueError) as exc:
+            logger.warning(f"Could not save history to {self._persist_path}: {exc}")
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass

@@ -45,6 +45,7 @@ except ImportError:
 
 from dalal_ai.browser.browser_manager import BrowserManager
 from dalal_ai.core.context_manager import ContextManager
+from dalal_ai.core.flagged_context_manager import FlaggedContextManager
 from dalal_ai.core.orchestrator import Orchestrator
 from utils.exceptions import BrowserActionRequired, ResponseCaptureTimeout
 from utils.paths import get_config_path, get_history_path, init_user_data
@@ -71,6 +72,10 @@ HELP_TEXT = f"""
   {Fore.GREEN}/kimi{Style.RESET_ALL}       Switch active model to Kimi
   {Fore.GREEN}/huggingchat{Style.RESET_ALL} Switch active model to HuggingChat
   {Fore.GREEN}/metaai{Style.RESET_ALL}     Switch active model to Meta AI
+  {Fore.GREEN}/green [n]{Style.RESET_ALL}  Flag message n (default: last) as global context
+  {Fore.GREEN}/red [n]{Style.RESET_ALL}    Flag message n (default: last) as on-demand context
+  {Fore.GREEN}/unflag [n]{Style.RESET_ALL} Remove the flag from message n (default: last)
+  {Fore.GREEN}/flags{Style.RESET_ALL}      List flagged messages
   {Fore.GREEN}/status{Style.RESET_ALL}     Show session statistics
   {Fore.GREEN}/tabs{Style.RESET_ALL}       List open browser tabs
   {Fore.GREEN}/history{Style.RESET_ALL}    Show recent conversation history
@@ -215,6 +220,9 @@ def main() -> None:
             print(f"     • {tab['title'][:50]} — {tab['url'][:60]}")
 
     orchestrator = Orchestrator(browser, context, config)
+    # Without this the CLI passed flagged_mgr=None, so no context was ever
+    # injected on a model switch — the transcript came out empty every time.
+    flagged_mgr = FlaggedContextManager()
 
     # Default to first platform
     active_model = platforms[0]
@@ -243,13 +251,40 @@ def main() -> None:
                 print(HELP_TEXT)
                 continue
 
-            elif cmd in ("/chatgpt", "/claude", "/gemini", "/deepseek", "/kimi", "/huggingchat", "/metaai"):
-                new_model = cmd.lstrip("/")
-                if new_model in platforms:
-                    active_model = new_model
-                    print_model_badge(active_model)
-                else:
-                    print(f"  {Fore.RED}Unknown platform: {new_model}{Style.RESET_ALL}")
+            elif cmd.startswith("/") and cmd[1:] in platforms:
+                active_model = cmd[1:]
+                print_model_badge(active_model)
+                continue
+
+            elif cmd.split()[0] in ("/green", "/red", "/unflag"):
+                parts = cmd.split()
+                flag = {"/green": "green", "/red": "red", "/unflag": None}[parts[0]]
+                if not context.messages:
+                    print(f"  {Fore.YELLOW}No messages to flag yet.{Style.RESET_ALL}")
+                    continue
+                try:
+                    index = int(parts[1]) if len(parts) > 1 else len(context.messages) - 1
+                except ValueError:
+                    print(f"  {Fore.RED}Usage: {parts[0]} [message index]{Style.RESET_ALL}")
+                    continue
+                if not 0 <= index < len(context.messages):
+                    print(f"  {Fore.RED}No message at index {index}.{Style.RESET_ALL}")
+                    continue
+                context.update_flag(index, flag)
+                label = flag or "cleared"
+                print(f"  {Fore.GREEN}Message [{index}] flag → {label}.{Style.RESET_ALL}")
+                continue
+
+            elif cmd == "/flags":
+                flagged = [
+                    (i, m) for i, m in enumerate(context.messages) if m.get("flag")
+                ]
+                if not flagged:
+                    print(f"  {Fore.YELLOW}No flagged messages.{Style.RESET_ALL}")
+                for i, m in flagged:
+                    mark = "GREEN" if m["flag"] == "green" else "RED"
+                    preview = m["content"][:60].replace("\n", " ")
+                    print(f"  [{i}] {mark:<5} {m['role']:<9} {preview}")
                 continue
 
             elif cmd == "/status":
@@ -280,15 +315,21 @@ def main() -> None:
             print(f"\n  {Fore.CYAN}📤 Sending to {active_model}...{Style.RESET_ALL}")
 
             try:
-                response = orchestrator.send_message(active_model, user_input)
+                response = orchestrator.send_message(
+                    active_model, user_input, flagged_mgr=flagged_mgr
+                )
                 print_response(active_model, response)
             except BrowserActionRequired as exc:
                 print(f"\n  {Fore.YELLOW}⚠ {exc}{Style.RESET_ALL}")
                 print(
                     f"  {Fore.YELLOW}👉 Complete the step in the browser, "
-                    f"then press Enter to continue...{Style.RESET_ALL}"
+                    f"then paste the reply below (or press Enter to skip).{Style.RESET_ALL}"
                 )
-                input()
+                pasted = input("  📋 Response: ").strip()
+                if pasted:
+                    # Nothing was recorded for this turn, so log both halves.
+                    orchestrator.record_manual_response(active_model, user_input, pasted)
+                    print_response(active_model, pasted)
             except ResponseCaptureTimeout as exc:
                 print(f"\n  {Fore.YELLOW}⚠ {exc}{Style.RESET_ALL}")
                 response = input(
